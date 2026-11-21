@@ -15,20 +15,30 @@ export const sendApplicationEmail = async ({
   body,
   resumePath,
   resumeFileName,
+  resumeBuffer,
 }) => {
+  let attachment = null;
+
+  if (resumeBuffer && Buffer.isBuffer(resumeBuffer) && resumeBuffer.length > 0) {
+    attachment = {
+      filename: resumeFileName || "Resume.pdf",
+      content: resumeBuffer,
+      contentType: "application/pdf",
+    };
+  } else if (resumePath) {
+    attachment = {
+      filename: resumeFileName || path.basename(resumePath),
+      path: resumePath,
+      contentType: "application/pdf",
+    };
+  }
+
   const mailOptions = {
     from: process.env.GMAIL_USER,
     to,
     subject,
     text: body,
-    attachments: resumePath
-      ? [
-          {
-            filename: resumeFileName || path.basename(resumePath),
-            path: resumePath,
-          },
-        ]
-      : [],
+    attachments: attachment ? [attachment] : [],
   };
 
   const info = await transporter.sendMail(mailOptions);

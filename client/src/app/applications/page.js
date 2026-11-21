@@ -86,6 +86,8 @@ export default function ApplicationsPage() {
   const [customNote, setCustomNote] = useState("");
   const [saving, setSaving] = useState(false);
   const [approving, setApproving] = useState(false);
+  const [sendingNow, setSendingNow] = useState(false);
+  const [processingQueue, setProcessingQueue] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
   const [approvingBatch, setApprovingBatch] = useState(false);
   const [busyId, setBusyId] = useState(null);
@@ -269,6 +271,53 @@ export default function ApplicationsPage() {
     }
   };
 
+  const sendImmediately = async () => {
+    if (!selected) return;
+    setSendingNow(true);
+    setActionError(null);
+    setNotice(null);
+    try {
+      await applicationApi.sendNow(selected._id);
+      await fetchApplications();
+      closeDrawer();
+      setNotice("Application sent successfully! Email dispatched with attached resume.");
+    } catch (err) {
+      setActionError(errorMessage(err));
+    } finally {
+      setSendingNow(false);
+    }
+  };
+
+  const handleSendNowRow = async (id) => {
+    setBusyId(id);
+    setActionError(null);
+    setNotice(null);
+    try {
+      await applicationApi.sendNow(id);
+      await fetchApplications();
+      setNotice("Application sent successfully! Email dispatched with attached resume.");
+    } catch (err) {
+      setActionError(errorMessage(err));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleProcessQueue = async () => {
+    setProcessingQueue(true);
+    setActionError(null);
+    setNotice(null);
+    try {
+      const result = await applicationApi.processQueue();
+      await fetchApplications();
+      setNotice(result.message || "Queue processed successfully!");
+    } catch (err) {
+      setActionError(errorMessage(err));
+    } finally {
+      setProcessingQueue(false);
+    }
+  };
+
   const approveSelected = async () => {
     if (!checkedIds.length) return;
     setApprovingBatch(true);
@@ -404,6 +453,21 @@ export default function ApplicationsPage() {
           {applications.length ? (
             <p className="text-xs text-zinc-500">{applications.length} shown</p>
           ) : null}
+          {statusFilter === "queued" && applications.length > 0 ? (
+            <button
+              type="button"
+              onClick={handleProcessQueue}
+              disabled={processingQueue}
+              className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3.5 py-2 text-sm font-medium text-white shadow-sm hover:bg-emerald-700 disabled:opacity-60"
+            >
+              {processingQueue ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Send className="h-4 w-4" />
+              )}
+              Send All Queued Now ({applications.length})
+            </button>
+          ) : null}
           {checkedIds.length ? (
             <button
               type="button"
@@ -480,10 +544,31 @@ export default function ApplicationsPage() {
                       <span className="rounded-full bg-zinc-100 p-3 text-zinc-400">
                         <Inbox className="h-6 w-6" />
                       </span>
-                      <p className="text-sm font-medium text-zinc-700">Nothing in the queue</p>
+                      <p className="text-sm font-medium text-zinc-700">
+                        {statusFilter === "draft"
+                          ? "No drafts waiting for review"
+                          : statusFilter === "queued"
+                          ? "No applications in the queue"
+                          : statusFilter === "sent"
+                          ? "No sent applications yet"
+                          : statusFilter === "followup"
+                          ? "No follow-ups due right now"
+                          : statusFilter === "failed"
+                          ? "No failed applications"
+                          : "No applications found"}
+                      </p>
                       <p className="max-w-sm text-sm text-zinc-500">
-                        Generate a draft from an email job on the dashboard and it will show up
-                        here for review.
+                        {statusFilter === "draft"
+                          ? "Generate drafts or use Auto-Apply from the Jobs page to craft personalized applications."
+                          : statusFilter === "queued"
+                          ? "Approve drafts from the Draft tab to place them in the queue, or use Auto-Apply from Jobs."
+                          : statusFilter === "sent"
+                          ? "Applications you send will show up here with delivery timestamps and follow-up tracking."
+                          : statusFilter === "followup"
+                          ? "Applications with no response after 5 days will surface here automatically."
+                          : statusFilter === "failed"
+                          ? "Any bounced or rejected sends will appear here with error logs."
+                          : "Start applying from the Jobs dashboard to populate your pipeline."}
                       </p>
                       <Link
                         href="/"
@@ -578,6 +663,22 @@ export default function ApplicationsPage() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex flex-wrap items-center justify-end gap-2">
+                        {application.status === "queued" ? (
+                          <button
+                            type="button"
+                            onClick={() => handleSendNowRow(application._id)}
+                            disabled={busyId === application._id}
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-2.5 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-emerald-700 disabled:opacity-60"
+                          >
+                            {busyId === application._id ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <Send className="h-3.5 w-3.5" />
+                            )}
+                            Send Now
+                          </button>
+                        ) : null}
+
                         {application.status === "failed" ? (
                           <button
                             type="button"
@@ -882,7 +983,7 @@ export default function ApplicationsPage() {
                   <button
                     type="button"
                     onClick={saveDraft}
-                    disabled={!editable || saving || approving || regenerating}
+                    disabled={!editable || saving || approving || sendingNow || regenerating}
                     className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {saving ? (
@@ -894,16 +995,29 @@ export default function ApplicationsPage() {
                   </button>
                   <button
                     type="button"
+                    onClick={sendImmediately}
+                    disabled={!editable || saving || approving || sendingNow || regenerating}
+                    className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3.5 py-2 text-sm font-medium text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-zinc-300"
+                  >
+                    {sendingNow ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Send className="h-4 w-4" />
+                    )}
+                    Send Now
+                  </button>
+                  <button
+                    type="button"
                     onClick={approve}
-                    disabled={!editable || saving || approving || regenerating}
-                    className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-zinc-300"
+                    disabled={!editable || saving || approving || sendingNow || regenerating}
+                    className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-3.5 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-zinc-300"
                   >
                     {approving ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
                     ) : (
                       <Send className="h-4 w-4" />
                     )}
-                    Approve &amp; Send
+                    Approve &amp; Queue
                   </button>
                 </div>
               </div>

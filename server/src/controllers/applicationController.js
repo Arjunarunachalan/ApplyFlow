@@ -10,6 +10,8 @@ import Profile from "../models/Profile.js";
 import Resume from "../models/Resume.js";
 import { emailQueue } from "../workers/emailQueue.js";
 import { generateApplicationEmail, generateFollowUpEmail } from "../services/aiGenerator.js";
+import { sendApplicationEmail } from "../services/mailSender.js";
+import { ensureResumeOnDisk, getResumeBuffer } from "../utils/resumeFile.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const EDITABLE_STATUSES = ["draft", "failed"];
@@ -407,10 +409,13 @@ const queueApplication = async (application) => {
     };
   }
 
-  if (!fs.existsSync(resume.filePath)) {
+  const validFilePath = await ensureResumeOnDisk(resume);
+  const resumeBuffer = getResumeBuffer(resume);
+
+  if (!validFilePath && !resumeBuffer) {
     return {
       status: 400,
-      error: `The resume file is missing on disk (${resume.fileName}). Re-upload it and try again.`,
+      error: `The resume file is missing (${resume.fileName}). Re-upload it and try again.`,
     };
   }
 
@@ -435,7 +440,7 @@ const queueApplication = async (application) => {
     to,
     subject: application.subject,
     body: application.body,
-    resumePath: resume.filePath,
+    resumePath: validFilePath || resume.filePath,
     resumeFileName: resume.fileName,
     isFollowUp: application.isFollowUp === true,
   });
@@ -451,6 +456,272 @@ const queueApplication = async (application) => {
   }
 
   return { ok: true, queueJobId: queued.id, application };
+};
+
+// Dispatches an email immediately via Nodemailer without waiting on the background queue.
+export const sendApplicationNow = async (application) => {
+  const job = application.jobId;
+  if (!job) {
+    return { status: 400, error: "The job for this application no longer exists" };
+  }
+
+  const resume = application.resumeId;
+  if (!resume) {
+    return { status: 400, error: "Attach a resume before sending" };
+  }
+
+  const to = application.recipientEmail || job.hrEmail;
+  if (!to) {
+    return { status: 400, error: "This application has no recipient email" };
+  }
+
+  const quota = await getQuota();
+  if (quota.sentToday >= quota.dailyLimit) {
+    return {
+      status: 429,
+      error: `Daily limit reached: ${quota.sentToday} sent in the last 24 hours against a limit of ${quota.dailyLimit}. Raise the limit on your profile or try again later.`,
+    };
+  }
+
+  const validFilePath = await ensureResumeOnDisk(resume);
+  const resumeBuffer = getResumeBuffer(resume);
+
+  if (!validFilePath && !resumeBuffer) {
+    return {
+      status: 400,
+      error: `The resume file is missing (${resume.fileName}). Re-upload it and try again.`,
+    };
+  }
+
+  try {
+    const messageId = await sendApplicationEmail({
+      to,
+      subject: application.subject,
+      body: application.body,
+      resumePath: validFilePath || resume.filePath,
+      resumeFileName: resume.fileName,
+      resumeBuffer,
+    });
+
+    const sentAt = new Date();
+    application.status = "sent";
+    application.messageId = messageId;
+    application.sentAt = sentAt;
+    application.errorLog = "";
+    if (!application.followUpDate) {
+      application.followUpDate = new Date(sentAt.getTime() + FOLLOW_UP_WINDOW_DAYS * DAY_MS);
+    }
+    await application.save();
+
+    if (!application.isFollowUp) {
+      job.status = "sent";
+      await job.save();
+    }
+
+    return { ok: true, messageId, application };
+  } catch (err) {
+    console.error(`[sendApplicationNow] Failed to send email to ${to}: ${err.message}`);
+    application.status = "failed";
+    application.errorLog = err.message;
+    await application.save();
+    if (!application.isFollowUp) {
+      job.status = "failed";
+      await job.save();
+    }
+    return { status: 500, error: `Failed to send email: ${err.message}` };
+  }
+};
+
+// POST /api/applications/:id/send-now
+export const sendNow = async (req, res) => {
+  try {
+    const application = await Application.findById(req.params.id)
+      .populate("jobId")
+      .populate("resumeId");
+
+    if (!application) return res.status(404).json({ error: "Application not found" });
+
+    const outcome = await sendApplicationNow(application);
+    if (outcome.error) return res.status(outcome.status || 500).json({ error: outcome.error });
+
+    return res.json({
+      message: "Application sent successfully",
+      messageId: outcome.messageId,
+      application: outcome.application.toObject(),
+    });
+  } catch (error) {
+    const cast = castError(error);
+    if (cast) return res.status(400).json(cast);
+    return res.status(500).json({ error: error.message });
+  }
+};
+
+// POST /api/applications/process-queue
+export const processQueue = async (_req, res) => {
+  try {
+    const queuedApps = await Application.find({ status: "queued" })
+      .populate("jobId")
+      .populate("resumeId")
+      .sort({ createdAt: 1 });
+
+    if (!queuedApps.length) {
+      return res.json({ message: "No applications in queue", processed: 0, sent: 0, failed: 0 });
+    }
+
+    let sent = 0;
+    let failed = 0;
+    const results = [];
+
+    for (const app of queuedApps) {
+      const outcome = await sendApplicationNow(app);
+      if (outcome.ok) {
+        sent += 1;
+        results.push({ id: app._id, status: "sent", messageId: outcome.messageId });
+      } else {
+        failed += 1;
+        results.push({ id: app._id, status: "failed", error: outcome.error });
+      }
+    }
+
+    return res.json({
+      message: `Processed ${queuedApps.length} queued application(s): ${sent} sent, ${failed} failed`,
+      processed: queuedApps.length,
+      sent,
+      failed,
+      results,
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+};
+
+// POST /api/applications/auto-apply/:jobId
+export const autoApply = async (req, res) => {
+  try {
+    if (!isObjectId(req.params.jobId)) {
+      return res.status(400).json({ error: "Invalid job id" });
+    }
+
+    const job = await Job.findById(req.params.jobId);
+    if (!job) return res.status(404).json({ error: "Job not found" });
+
+    if (job.applicationType !== "email") {
+      return res
+        .status(400)
+        .json({ error: "Only email jobs can be auto-applied; use the portal link for this job." });
+    }
+
+    if (!job.hrEmail) {
+      return res.status(400).json({ error: "This job has no HR email address" });
+    }
+
+    const { resumeId, tone, customNote } = req.body || {};
+    const resolved = await resolveResume(resumeId);
+    if (resolved.error) return res.status(resolved.status).json({ error: resolved.error });
+
+    const profile = (await Profile.findOne()) || {};
+    const { application } = await createDraftForJob({
+      job,
+      profile,
+      resume: resolved.resume,
+      tone,
+      customNote,
+    });
+
+    await application.populate(["jobId", "resumeId"]);
+
+    const outcome = await sendApplicationNow(application);
+    if (outcome.error) {
+      return res.status(outcome.status || 500).json({
+        error: outcome.error,
+        application: outcome.application ? outcome.application.toObject() : application.toObject(),
+      });
+    }
+
+    return res.status(200).json({
+      message: `Auto-applied successfully to ${job.companyName}!`,
+      messageId: outcome.messageId,
+      application: outcome.application.toObject(),
+    });
+  } catch (error) {
+    const cast = castError(error);
+    if (cast) return res.status(400).json(cast);
+    return res.status(500).json({ error: error.message });
+  }
+};
+
+// POST /api/applications/auto-apply-batch
+export const autoApplyBatch = async (req, res) => {
+  try {
+    const { jobIds, resumeId, tone, customNote } = req.body || {};
+    const ids = Array.isArray(jobIds) ? jobIds.map(String).filter(Boolean) : [];
+
+    if (!ids.length) {
+      return res.status(400).json({ error: "Provide an array of jobIds" });
+    }
+
+    const resolved = await resolveResume(resumeId);
+    if (resolved.error) return res.status(resolved.status).json({ error: resolved.error });
+
+    const profile = (await Profile.findOne()) || {};
+    let applied = 0;
+    let failed = 0;
+    let skipped = 0;
+    const results = [];
+
+    for (const jobId of ids) {
+      const job = await Job.findById(jobId);
+      if (!job || job.applicationType !== "email" || !job.hrEmail) {
+        skipped += 1;
+        results.push({ jobId, status: "skipped", reason: "Invalid job or missing HR email" });
+        continue;
+      }
+
+      if (["queued", "sent"].includes(job.status)) {
+        skipped += 1;
+        results.push({ jobId, status: "skipped", reason: `Job already ${job.status}` });
+        continue;
+      }
+
+      try {
+        const { application } = await createDraftForJob({
+          job,
+          profile,
+          resume: resolved.resume,
+          tone,
+          customNote,
+        });
+
+        await application.populate(["jobId", "resumeId"]);
+        const outcome = await sendApplicationNow(application);
+
+        if (outcome.ok) {
+          applied += 1;
+          results.push({
+            jobId,
+            company: job.companyName,
+            status: "sent",
+            messageId: outcome.messageId,
+          });
+        } else {
+          failed += 1;
+          results.push({
+            jobId,
+            company: job.companyName,
+            status: "failed",
+            error: outcome.error,
+          });
+        }
+      } catch (err) {
+        failed += 1;
+        results.push({ jobId, status: "failed", error: err.message });
+      }
+    }
+
+    return res.json({ applied, failed, skipped, results });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
 };
 
 // POST /api/applications/:id/approve-and-queue

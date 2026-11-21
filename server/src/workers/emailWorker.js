@@ -7,9 +7,11 @@ import { connectDB } from "../config/db.js";
 import { redisConnection } from "../config/redis.js";
 import Application from "../models/Application.js";
 import Job from "../models/Job.js";
+import Resume from "../models/Resume.js";
 import { sendApplicationEmail } from "../services/mailSender.js";
 import { syncReplies } from "../services/replySync.js";
 import { sendDailyDigest } from "../services/dailyDigest.js";
+import { ensureResumeOnDisk, getResumeBuffer } from "../utils/resumeFile.js";
 
 // The worker writes status back to MongoDB, so it needs its own connection.
 await connectDB();
@@ -38,12 +40,24 @@ const worker = new Worker(
 
     await humanDelay();
 
+    let validPath = resumePath;
+    let resumeBuffer = null;
+
+    if (applicationId) {
+      const app = await Application.findById(applicationId).populate("resumeId");
+      if (app?.resumeId) {
+        resumeBuffer = getResumeBuffer(app.resumeId);
+        validPath = await ensureResumeOnDisk(app.resumeId);
+      }
+    }
+
     const messageId = await sendApplicationEmail({
       to,
       subject,
       body,
-      resumePath,
+      resumePath: validPath,
       resumeFileName,
+      resumeBuffer,
     });
 
     console.log(`[Job ${job.id}] Sent! Message ID: ${messageId}`);

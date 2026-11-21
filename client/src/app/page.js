@@ -63,10 +63,14 @@ export default function JobsDashboard() {
   const fetchJobs = useJobStore((state) => state.fetchJobs);
   const deleteJob = useJobStore((state) => state.deleteJob);
   const generatingJobId = useJobStore((state) => state.generatingJobId);
+  const applyingJobId = useJobStore((state) => state.applyingJobId);
   const generateDraft = useJobStore((state) => state.generateDraft);
+  const autoApply = useJobStore((state) => state.autoApply);
   const bulkDrafting = useJobStore((state) => state.bulkDrafting);
+  const bulkApplying = useJobStore((state) => state.bulkApplying);
   const bulkProgress = useJobStore((state) => state.bulkProgress);
   const generateDrafts = useJobStore((state) => state.generateDrafts);
+  const autoApplyBatch = useJobStore((state) => state.autoApplyBatch);
   const markJobStatus = useJobStore((state) => state.markJobStatus);
   const createJob = useJobStore((state) => state.createJob);
   const setInterview = useJobStore((state) => state.setInterview);
@@ -115,6 +119,28 @@ export default function JobsDashboard() {
   const onGenerate = async (job) => {
     const application = await generateDraft(job._id, { tone });
     if (application) router.push("/applications");
+  };
+
+  const onAutoApply = async (job) => {
+    setNotice(null);
+    const result = await autoApply(job._id, { tone });
+    if (result?.application) {
+      setNotice(`Auto-applied to ${job.companyName}! Email dispatched with your attached resume.`);
+      fetchJobs();
+    }
+  };
+
+  const onBulkAutoApply = async () => {
+    setNotice(null);
+    const result = await autoApplyBatch(selectedIds, tone);
+    if (!result) return;
+    setNotice(
+      `Auto-applied to ${result.applied} job${result.applied === 1 ? "" : "s"}` +
+        (result.skipped ? ` · ${result.skipped} skipped` : "") +
+        (result.failed ? ` · ${result.failed} failed` : "") +
+        ". Review them on the Applications Sent tab.",
+    );
+    setSelectedIds([]);
   };
 
   const toggleJob = (id) =>
@@ -439,9 +465,25 @@ export default function JobsDashboard() {
 
             <button
               type="button"
+              onClick={onBulkAutoApply}
+              disabled={bulkApplying || bulkDrafting}
+              className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3.5 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-300"
+            >
+              {bulkApplying ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Send className="h-4 w-4" />
+              )}
+              {bulkApplying
+                ? `Auto-Applying ${selectedCount}…`
+                : `Auto-Apply Selected (${selectedCount})`}
+            </button>
+
+            <button
+              type="button"
               onClick={onBulkGenerate}
-              disabled={bulkDrafting}
-              className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-300"
+              disabled={bulkDrafting || bulkApplying}
+              className="inline-flex items-center gap-2 rounded-lg border border-indigo-200 bg-white px-3 py-2 text-sm font-medium text-indigo-700 shadow-sm transition-colors hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {bulkDrafting ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -450,7 +492,7 @@ export default function JobsDashboard() {
               )}
               {bulkDrafting
                 ? `Drafting ${bulkProgress?.total ?? selectedCount}…`
-                : `Generate Personalized Drafts (${selectedCount})`}
+                : `Generate Drafts (${selectedCount})`}
             </button>
 
             <button
@@ -598,19 +640,45 @@ export default function JobsDashboard() {
                         !["queued", "sent", "replied", "interview", "rejected"].includes(
                           job.status,
                         ) ? (
-                          <button
-                            type="button"
-                            onClick={() => onGenerate(job)}
-                            disabled={generatingJobId === job._id || bulkDrafting}
-                            className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-2.5 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-300"
-                          >
-                            {generatingJobId === job._id ? (
-                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                            ) : (
-                              <Sparkles className="h-3.5 w-3.5" />
-                            )}
-                            {job.status === "draft_ready" ? "Regenerate" : "Generate Draft"}
-                          </button>
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => onAutoApply(job)}
+                              disabled={
+                                applyingJobId === job._id ||
+                                generatingJobId === job._id ||
+                                bulkApplying ||
+                                bulkDrafting
+                              }
+                              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-2.5 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-300"
+                            >
+                              {applyingJobId === job._id ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <Send className="h-3.5 w-3.5" />
+                              )}
+                              Auto-Apply
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => onGenerate(job)}
+                              disabled={
+                                generatingJobId === job._id ||
+                                applyingJobId === job._id ||
+                                bulkDrafting ||
+                                bulkApplying
+                              }
+                              className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-white px-2.5 py-1.5 text-xs font-medium text-indigo-700 shadow-sm transition-colors hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {generatingJobId === job._id ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <Sparkles className="h-3.5 w-3.5" />
+                              )}
+                              {job.status === "draft_ready" ? "Regenerate" : "Draft"}
+                            </button>
+                          </>
                         ) : null}
 
                         {job.applicationType === "email" && job.status === "draft_ready" ? (

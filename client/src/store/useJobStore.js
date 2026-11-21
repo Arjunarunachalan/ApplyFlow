@@ -19,7 +19,9 @@ export const useJobStore = create((set, get) => ({
   resumeError: null,
   lastImport: null,
   generatingJobId: null,
+  applyingJobId: null,
   bulkDrafting: false,
+  bulkApplying: false,
   bulkProgress: null,
 
   setFilter: (patch) => set((state) => ({ filters: { ...state.filters, ...patch } })),
@@ -59,6 +61,37 @@ export const useJobStore = create((set, get) => ({
       return application;
     } catch (error) {
       set({ generatingJobId: null, error: errorMessage(error) });
+      return null;
+    }
+  },
+
+  autoApply: async (jobId, options = {}) => {
+    set({ applyingJobId: jobId, error: null });
+    try {
+      const result = await applicationApi.autoApply(jobId, options);
+      set({ applyingJobId: null });
+      await get().fetchJobs();
+      return result;
+    } catch (error) {
+      set({ applyingJobId: null, error: errorMessage(error) });
+      return null;
+    }
+  },
+
+  autoApplyBatch: async (jobIds, tone = "direct") => {
+    if (!jobIds.length) return null;
+    set({
+      bulkApplying: true,
+      bulkProgress: { done: 0, total: jobIds.length },
+      error: null,
+    });
+    try {
+      const result = await applicationApi.autoApplyBatch({ jobIds, tone });
+      set({ bulkApplying: false, bulkProgress: null });
+      await get().fetchJobs();
+      return result;
+    } catch (error) {
+      set({ bulkApplying: false, bulkProgress: null, error: errorMessage(error) });
       return null;
     }
   },

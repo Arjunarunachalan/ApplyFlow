@@ -88,6 +88,10 @@ export const applicationApi = {
     unwrap(api.patch(`/applications/${id}/status`, { status })),
   update: (id, patch) => unwrap(api.patch(`/applications/${id}`, patch)),
   approve: (id) => unwrap(api.post(`/applications/${id}/approve-and-queue`)),
+  sendNow: (id) => unwrap(api.post(`/applications/${id}/send-now`)),
+  processQueue: () => unwrap(api.post("/applications/process-queue")),
+  autoApply: (jobId, options = {}) => unwrap(api.post(`/applications/auto-apply/${jobId}`, options)),
+  autoApplyBatch: (payload) => unwrap(api.post("/applications/auto-apply-batch", payload)),
   get exportCsvUrl() {
     return `${getApiBaseUrl()}/applications/export-csv`;
   },

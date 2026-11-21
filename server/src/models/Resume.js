@@ -5,6 +5,9 @@ const resumeSchema = new mongoose.Schema({
   fileName: { type: String, required: true, trim: true },
   filePath: { type: String, required: true, trim: true },
   isDefault: { type: Boolean, default: false },
+  // Base64-encoded PDF file data stored in MongoDB so the file survives
+  // ephemeral serverless container recycles and disk wipes.
+  fileData: { type: String, default: "" },
   // Clean text taken from the PDF; the AI generator treats it as the only
   // source of truth for skills, projects and experience.
   extractedText: { type: String, default: "" },
