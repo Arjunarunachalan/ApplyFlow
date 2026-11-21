@@ -7,6 +7,13 @@ import Job, {
 } from "../models/Job.js";
 import Profile from "../models/Profile.js";
 import { computeMatch } from "../services/jobMatcher.js";
+import {
+  createDraftForJob,
+  getQuota,
+  queueApplication,
+  resolveResume,
+} from "./applicationController.js";
+import { ensureResumeOnDisk, getResumeBuffer } from "../utils/resumeFile.js";
 
 // Column names vary between exports, so every header is normalised to
 // lowercase alphanumerics and matched against a list of accepted aliases.
@@ -242,7 +249,7 @@ export const recalculateScores = async (_req, res) => {
   }
 };
 
-// POST /api/jobs — add one vacancy by hand, scored like an imported row
+// POST /api/jobs (and POST /api/jobs/manual) — add one vacancy by hand, scored like an imported row
 export const createJob = async (req, res) => {
   try {
     const body = req.body || {};
@@ -266,6 +273,16 @@ export const createJob = async (req, res) => {
         .json({ error: "Provide a valid HR email or an apply URL" });
     }
 
+    const mode = String(body.mode || "save_only").trim();
+
+    if (mode === "generate_draft" || mode === "auto_queue") {
+      if (applicationType !== "email" || !rawEmail) {
+        return res.status(400).json({
+          error: "Only jobs with a valid HR email can generate an AI email draft or auto-queue an application",
+        });
+      }
+    }
+
     const existing = await Job.findOne({
       companyName: new RegExp(`^${escapeRegex(companyName)}$`, "i"),
       jobRole: new RegExp(`^${escapeRegex(jobRole)}$`, "i"),
@@ -276,6 +293,33 @@ export const createJob = async (req, res) => {
         error: "This job already exists",
         jobId: existing._id,
       });
+    }
+
+    const { resumeId, tone, customNote } = body;
+    let resolvedResume = null;
+    if (mode === "generate_draft" || mode === "auto_queue") {
+      const resolved = await resolveResume(resumeId);
+      if (resolved.error) {
+        return res.status(resolved.status).json({ error: resolved.error });
+      }
+      resolvedResume = resolved.resume;
+
+      const validFilePath = await ensureResumeOnDisk(resolvedResume);
+      const resumeBuffer = getResumeBuffer(resolvedResume);
+      if (!validFilePath && !resumeBuffer) {
+        return res.status(400).json({
+          error: `The resume file is missing (${resolvedResume.fileName}). Re-upload it and try again.`,
+        });
+      }
+    }
+
+    if (mode === "auto_queue") {
+      const quota = await getQuota();
+      if (quota.sentToday + quota.queued >= quota.dailyLimit) {
+        return res.status(429).json({
+          error: `Daily limit reached: ${quota.sentToday} sent and ${quota.queued} queued against a limit of ${quota.dailyLimit}. Raise the limit on your profile or try again later.`,
+        });
+      }
     }
 
     const profile = await Profile.findOne().lean();
@@ -301,7 +345,43 @@ export const createJob = async (req, res) => {
       matchedSkills,
     });
 
-    return res.status(201).json(job);
+    if (mode === "generate_draft") {
+      const { application } = await createDraftForJob({
+        job,
+        profile,
+        resume: resolvedResume,
+        tone,
+        customNote,
+      });
+      return res.status(201).json({ job, application });
+    }
+
+    if (mode === "auto_queue") {
+      const { application } = await createDraftForJob({
+        job,
+        profile,
+        resume: resolvedResume,
+        tone,
+        customNote,
+      });
+
+      application.jobId = job;
+      application.resumeId = resolvedResume;
+      const outcome = await queueApplication(application);
+
+      if (outcome.error) {
+        return res.status(outcome.status || 500).json({ error: outcome.error, job, application });
+      }
+
+      return res.status(201).json({
+        job,
+        application: outcome.application || application,
+        queued: true,
+      });
+    }
+
+    // Default: "save_only"
+    return res.status(201).json({ job, ...job.toObject() });
   } catch (error) {
     return res.status(500).json({ error: error.message });
   }

@@ -35,7 +35,7 @@ const resolveDailyLimit = async () => {
 
 // sentToday counts only sends from the last 24 hours, and queued applications
 // are subtracted from the headroom so approving twice cannot overshoot.
-const getQuota = async () => {
+export const getQuota = async () => {
   const since = new Date(Date.now() - DAY_MS);
   const [sentToday, queued, dailyLimit] = await Promise.all([
     Application.countDocuments({ status: "sent", sentAt: { $gte: since } }),
@@ -55,7 +55,7 @@ const castError = (error) =>
   error.name === "CastError" ? { error: "Invalid id" } : null;
 
 // The resume attached to a send: an explicit choice, the default, or the newest.
-const resolveResume = async (resumeId) => {
+export const resolveResume = async (resumeId) => {
   if (resumeId) {
     if (!isObjectId(resumeId)) return { error: "Invalid resume id", status: 400 };
     const resume = await Resume.findById(resumeId);
@@ -74,7 +74,7 @@ const resolveResume = async (resumeId) => {
 
 // Generates copy for one vacancy and reuses any editable draft so repeated
 // generations do not stack applications on the same job.
-const createDraftForJob = async ({ job, profile, resume, tone, customNote }) => {
+export const createDraftForJob = async ({ job, profile, resume, tone, customNote }) => {
   const { subject, body, providerUsed } = await generateApplicationEmail({
     job,
     profile,
@@ -378,7 +378,7 @@ export const updateApplication = async (req, res) => {
 };
 
 // Shared by single and batch approval so both enforce the same safeguards.
-const queueApplication = async (application) => {
+export const queueApplication = async (application) => {
   if (!EDITABLE_STATUSES.includes(application.status)) {
     return {
       status: 400,
@@ -664,20 +664,47 @@ export const autoApplyBatch = async (req, res) => {
     if (resolved.error) return res.status(resolved.status).json({ error: resolved.error });
 
     const profile = (await Profile.findOne()) || {};
-    let applied = 0;
+    let queued = 0;
     let failed = 0;
     let skipped = 0;
+    let stoppedByQuota = false;
     const results = [];
 
     for (const jobId of ids) {
-      const job = await Job.findById(jobId);
-      if (!job || job.applicationType !== "email" || !job.hrEmail) {
+      if (stoppedByQuota) {
         skipped += 1;
-        results.push({ jobId, status: "skipped", reason: "Invalid job or missing HR email" });
+        results.push({ jobId, status: "skipped", reason: "Stopped: daily quota reached" });
         continue;
       }
 
-      if (["queued", "sent"].includes(job.status)) {
+      const quota = await getQuota();
+      if (quota.sentToday + quota.queued >= quota.dailyLimit) {
+        stoppedByQuota = true;
+        skipped += 1;
+        results.push({ jobId, status: "skipped", reason: "Daily quota limit reached" });
+        continue;
+      }
+
+      const job = await Job.findById(jobId);
+      if (!job) {
+        skipped += 1;
+        results.push({ jobId, status: "skipped", reason: "Job not found" });
+        continue;
+      }
+
+      if (job.applicationType !== "email") {
+        skipped += 1;
+        results.push({ jobId, status: "skipped", reason: "Not an email application" });
+        continue;
+      }
+
+      if (!job.hrEmail) {
+        skipped += 1;
+        results.push({ jobId, status: "skipped", reason: "This job has no HR email address" });
+        continue;
+      }
+
+      if (BLOCKING_STATUSES.includes(job.status)) {
         skipped += 1;
         results.push({ jobId, status: "skipped", reason: `Job already ${job.status}` });
         continue;
@@ -692,16 +719,18 @@ export const autoApplyBatch = async (req, res) => {
           customNote,
         });
 
-        await application.populate(["jobId", "resumeId"]);
-        const outcome = await sendApplicationNow(application);
+        application.jobId = job;
+        application.resumeId = resolved.resume;
+        const outcome = await queueApplication(application);
 
         if (outcome.ok) {
-          applied += 1;
+          queued += 1;
           results.push({
             jobId,
             company: job.companyName,
-            status: "sent",
-            messageId: outcome.messageId,
+            status: "queued",
+            applicationId: application._id,
+            queueJobId: outcome.queueJobId,
           });
         } else {
           failed += 1;
@@ -718,7 +747,15 @@ export const autoApplyBatch = async (req, res) => {
       }
     }
 
-    return res.json({ applied, failed, skipped, results });
+    const finalQuota = await getQuota();
+    return res.json({
+      queued,
+      skipped,
+      failed,
+      stoppedByQuota,
+      remainingQuota: finalQuota.remaining,
+      results,
+    });
   } catch (error) {
     return res.status(500).json({ error: error.message });
   }

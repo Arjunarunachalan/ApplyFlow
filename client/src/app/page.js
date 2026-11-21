@@ -135,10 +135,12 @@ export default function JobsDashboard() {
     const result = await autoApplyBatch(selectedIds, tone);
     if (!result) return;
     setNotice(
-      `Auto-applied to ${result.applied} job${result.applied === 1 ? "" : "s"}` +
+      `Batch auto-applied: ${result.queued ?? result.applied ?? 0} application${(result.queued ?? result.applied) === 1 ? "" : "s"} queued` +
         (result.skipped ? ` · ${result.skipped} skipped` : "") +
+        (result.stoppedByQuota ? " · stopped by daily limit" : "") +
         (result.failed ? ` · ${result.failed} failed` : "") +
-        ". Review them on the Applications Sent tab.",
+        (result.remainingQuota !== undefined ? ` · ${result.remainingQuota} daily quota remaining` : "") +
+        ". Check the Applications page.",
     );
     setSelectedIds([]);
   };
@@ -184,12 +186,18 @@ export default function JobsDashboard() {
   const handleAddJob = async () => {
     setAddingJob(true);
     setNotice(null);
-    const created = await createJob(newJob);
-    setAddingJob(false);
-    if (created) {
-      setAddJobOpen(false);
-      setNotice(`${created.companyName} · ${created.jobRole} added.`);
-      fetchJobs();
+    try {
+      const created = await createJob(newJob);
+      setAddingJob(false);
+      const job = created?.job || created;
+      if (job) {
+        setAddJobOpen(false);
+        setNotice(`${job.companyName} · ${job.jobRole} added.`);
+        fetchJobs();
+      }
+    } catch (err) {
+      setAddingJob(false);
+      setNotice(`Failed to add job: ${err?.response?.data?.error || err.message}`);
     }
   };
 
@@ -331,7 +339,7 @@ export default function JobsDashboard() {
             className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm font-medium text-zinc-700 shadow-sm hover:bg-zinc-50"
           >
             <Upload className="h-4 w-4" />
-            Import CSV
+            Add / Import Jobs
           </Link>
         </div>
       </header>
@@ -476,7 +484,7 @@ export default function JobsDashboard() {
               )}
               {bulkApplying
                 ? `Auto-Applying ${selectedCount}…`
-                : `Auto-Apply Selected (${selectedCount})`}
+                : `Batch Auto-Apply (${selectedCount})`}
             </button>
 
             <button

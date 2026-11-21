@@ -20,7 +20,7 @@ const NAV_ITEMS = [
   { href: "/", label: "Jobs", icon: Briefcase },
   { href: "/applications", label: "Applications", icon: Send },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
-  { href: "/import", label: "Import CSV", icon: Upload },
+  { href: "/import", label: "Add / Import Jobs", icon: Upload },
   { href: "/resumes", label: "Resumes", icon: FileText },
   { href: "/profile", label: "Profile", icon: UserRound },
 ];

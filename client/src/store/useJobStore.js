@@ -128,15 +128,18 @@ export const useJobStore = create((set, get) => ({
     }
   },
 
-  createJob: async (job) => {
+  createJob: async (jobData) => {
     set({ error: null });
     try {
-      const created = await jobApi.create(job);
-      set((state) => ({ jobs: [created, ...state.jobs] }));
-      return created;
+      const result = await jobApi.create(jobData);
+      const job = result?.job || result;
+      if (job) {
+        set((state) => ({ jobs: [job, ...state.jobs] }));
+      }
+      return result;
     } catch (error) {
       set({ error: errorMessage(error) });
-      return null;
+      throw error;
     }
   },
 
