@@ -1,0 +1,33 @@
+{
+  "name": "server",
+  "version": "1.0.0",
+  "description": "",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "nodemon src/index.js",
+    "worker": "nodemon src/workers/emailWorker.js",
+    "start": "node src/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bullmq": "^6.7.8",
+    "cors": "^2.8.6",
+    "csv-parser": "^3.2.1",
+    "dotenv": "^18.0.10",
+    "express": "^5.3.0",
+    "imapflow": "^2.12.2",
+    "ioredis": "^6.0.0",
+    "mongoose": "^9.12.2",
+    "multer": "^2.5.0",
+    "nodemailer": "^10.6.0",
+    "pdfkit": "^0.21.0",
+    "unpdf": "^1.9.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}

@@ -1,0 +1,138 @@
+import fs from "node:fs";
+import path from "node:path";
+import Resume from "../models/Resume.js";
+import { extractResumeText } from "../services/resumeParser.js";
+
+const titleFromFile = (fileName) => {
+  const base = path.basename(fileName, path.extname(fileName));
+  return base.replace(/[-_]+/g, " ").trim() || "Resume";
+};
+
+// POST /api/resumes
+export const uploadResume = async (req, res) => {
+  if (!req.file) {
+    return res
+      .status(400)
+      .json({ error: "No PDF uploaded. Send the file in a form field named 'file'." });
+  }
+
+  try {
+    const isDefault =
+      req.body.isDefault === "true" ||
+      req.body.isDefault === "on" ||
+      req.body.isDefault === true;
+
+    let extractedText = "";
+    let parsedAt = null;
+    try {
+      extractedText = await extractResumeText(req.file.path);
+      parsedAt = new Date();
+    } catch (error) {
+      console.warn(`[resumes] Could not parse text from ${req.file.originalname}: ${error.message}`);
+    }
+
+    const resume = await Resume.create({
+      title: (req.body.title || "").trim() || titleFromFile(req.file.originalname),
+      fileName: req.file.originalname,
+      filePath: req.file.path,
+      isDefault,
+      extractedText,
+      parsedAt,
+      uploadedAt: new Date(),
+    });
+
+    if (isDefault) {
+      await Resume.updateMany(
+        { _id: { $ne: resume._id } },
+        { $set: { isDefault: false } },
+      );
+    }
+
+    return res.status(201).json(resume);
+  } catch (error) {
+    fs.promises.unlink(req.file.path).catch(() => {});
+    return res.status(500).json({ error: error.message });
+  }
+};
+
+// GET /api/resumes
+export const getResumes = async (_req, res) => {
+  try {
+    const resumes = await Resume.find().sort({ uploadedAt: -1 }).lean();
+    return res.json(resumes);
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+};
+
+// POST /api/resumes/:id/reparse — re-runs extraction on the stored PDF
+export const reparseResume = async (req, res) => {
+  try {
+    const resume = await Resume.findById(req.params.id);
+    if (!resume) return res.status(404).json({ error: "Resume not found" });
+
+    if (!resume.filePath || !fs.existsSync(resume.filePath)) {
+      return res.status(400).json({
+        error: `The PDF for this resume is missing on disk (${resume.fileName}). Re-upload it.`,
+      });
+    }
+
+    let text;
+    try {
+      text = await extractResumeText(resume.filePath);
+    } catch (error) {
+      return res
+        .status(422)
+        .json({ error: `Could not read text from this PDF: ${error.message}` });
+    }
+
+    resume.extractedText = text;
+    resume.parsedAt = new Date();
+    await resume.save();
+
+    return res.json(resume);
+  } catch (error) {
+    if (error.name === "CastError") {
+      return res.status(400).json({ error: "Invalid resume id" });
+    }
+    return res.status(500).json({ error: error.message });
+  }
+};
+
+// PATCH /api/resumes/:id/default — marks one resume as the default
+export const setDefaultResume = async (req, res) => {
+  try {
+    const resume = await Resume.findById(req.params.id);
+    if (!resume) return res.status(404).json({ error: "Resume not found" });
+
+    await Resume.updateMany({ _id: { $ne: resume._id } }, { $set: { isDefault: false } });
+    resume.isDefault = true;
+    await resume.save();
+
+    return res.json(resume);
+  } catch (error) {
+    if (error.name === "CastError") {
+      return res.status(400).json({ error: "Invalid resume id" });
+    }
+    return res.status(500).json({ error: error.message });
+  }
+};
+
+// DELETE /api/resumes/:id
+export const deleteResume = async (req, res) => {
+  try {
+    const resume = await Resume.findByIdAndDelete(req.params.id);
+    if (!resume) return res.status(404).json({ error: "Resume not found" });
+
+    if (resume.filePath) {
+      await fs.promises.unlink(resume.filePath).catch(() => {});
+    }
+
+    return res.json({ message: "Resume deleted", id: resume._id });
+  } catch (error) {
+    if (error.name === "CastError") {
+      return res.status(400).json({ error: "Invalid resume id" });
+    }
+    return res.status(500).json({ error: error.message });
+  }
+};

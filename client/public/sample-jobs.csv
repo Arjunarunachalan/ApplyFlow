@@ -1,0 +1,8 @@
+Company Name,Job Role,HR Email,Apply URL,Job Description,Location,Company Website,Salary,Email Source
+Acme Corp,Frontend Developer,hr@acme.com,https://acme.com/careers/frontend,Build React dashboards with the platform team,Remote,https://acme.com,90000 USD,LinkedIn
+Nimbus Labs,Backend Engineer,,https://nimbuslabs.io/jobs/backend,Own Node.js services and MongoDB models,Bengaluru,https://nimbuslabs.io,18 LPA,Cutshort
+Acme Corp,Frontend Developer,hr@acme.com,https://acme.com/careers/frontend,Duplicate row used to test deduplication,Remote,https://acme.com,90000 USD,LinkedIn
+Orbit Systems,QA Engineer,not-an-email,https://orbitsystems.dev/careers/qa,Own the end-to-end test suite,Hyderabad,https://orbitsystems.dev,60000 USD,Naukri
+Skyline Analytics,Data Analyst,careers@skyline.io,,SQL and dashboarding for the growth team,Pune,https://skyline.io,75000 USD,Referral
+,Missing Company,hr@nowhere.com,,,,,, 
+Vertex Studio,Product Designer,design@vertex.studio,https://vertex.studio/jobs/design,Design the application flow end to end,Dubai,https://vertex.studio,80000 USD,AngelList
