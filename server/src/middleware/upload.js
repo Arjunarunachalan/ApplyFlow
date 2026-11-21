@@ -1,17 +1,25 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import multer from "multer";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// server/uploads, resolved from this file so it works whatever the cwd is.
-export const UPLOADS_DIR = path.resolve(__dirname, "../../uploads");
+// In Vercel serverless environments, the filesystem is read-only except for os.tmpdir().
+// Locally, use server/uploads.
+export const UPLOADS_DIR = process.env.VERCEL
+  ? path.join(os.tmpdir(), "uploads")
+  : path.resolve(__dirname, "../../uploads");
 export const RESUMES_DIR = path.join(UPLOADS_DIR, "resumes");
 export const IMPORT_TMP_DIR = path.join(UPLOADS_DIR, "tmp");
 
 for (const dir of [UPLOADS_DIR, RESUMES_DIR, IMPORT_TMP_DIR]) {
-  fs.mkdirSync(dir, { recursive: true });
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch (err) {
+    console.warn(`[upload] Could not create directory ${dir}: ${err.message}`);
+  }
 }
 
 const diskStorage = (destination) =>

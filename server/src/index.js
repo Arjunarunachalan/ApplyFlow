@@ -12,11 +12,25 @@ import applicationRoutes from "./routes/applications.js";
 import analyticsRoutes from "./routes/analytics.js";
 import syncRoutes from "./routes/sync.js";
 
+import mongoose from "mongoose";
+
 const app = express();
 const PORT = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(express.json());
+
+// Ensure MongoDB is connected before handling requests in serverless environments
+app.use(async (_req, res, next) => {
+  if (mongoose.connection.readyState < 1) {
+    try {
+      await connectDB();
+    } catch (err) {
+      return res.status(500).json({ error: "Database connection failed" });
+    }
+  }
+  next();
+});
 
 app.use("/api/jobs", jobRoutes);
 app.use("/api/resumes", resumeRoutes);
@@ -60,8 +74,12 @@ app.use((err, _req, res, _next) => {
   res.status(status).json({ error: err.message });
 });
 
-connectDB().then(() => {
-  app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+if (!process.env.VERCEL) {
+  connectDB().then(() => {
+    app.listen(PORT, () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+    });
   });
-});
+}
+
+export default app;
