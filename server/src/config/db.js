@@ -1,35 +1,64 @@
 import mongoose from "mongoose";
 import dns from "node:dns";
 
-// Node's resolver (c-ares) picks the DNS servers for mongodb+srv:// lookups
-// itself, and on some Windows setups it ends up with a loopback server that
-// nothing listens on (querySrv ECONNREFUSED). DNS_SERVERS lets us point it at
-// resolvers that actually answer, e.g. DNS_SERVERS=8.8.8.8,1.1.1.1
+// Configure reliable DNS servers (Google 8.8.8.8, Cloudflare 1.1.1.1)
+// to prevent c-ares SRV lookup failures on serverless or Windows environments.
 export const applyDnsOverride = () => {
-  const servers = (process.env.DNS_SERVERS || "")
+  const envServers = (process.env.DNS_SERVERS || "")
     .split(",")
     .map((s) => s.trim())
-    .filter(Boolean);
+    .filter((s) => Boolean(s) && !s.startsWith("103.")); // Discard stale/unreachable ISP IPs
 
-  if (servers.length) {
+  const servers = envServers.length > 0 ? envServers : ["8.8.8.8", "1.1.1.1"];
+
+  try {
     dns.setServers(servers);
-    console.log(`DNS resolvers overridden: ${servers.join(", ")}`);
+    console.log(`DNS resolvers configured: ${servers.join(", ")}`);
+  } catch (err) {
+    console.warn("Could not set custom DNS servers:", err.message);
   }
 };
 
+let cached = global.mongoose;
+if (!cached) {
+  cached = global.mongoose = { conn: null, promise: null };
+}
+
 export const connectDB = async () => {
-  if (mongoose.connection.readyState >= 1) return mongoose.connection;
-  applyDnsOverride();
+  if (cached.conn && mongoose.connection.readyState === 1) {
+    return cached.conn;
+  }
+
+  if (!cached.promise) {
+    applyDnsOverride();
+
+    const opts = {
+      bufferCommands: false, // In serverless, do not buffer queries when disconnected
+      serverSelectionTimeoutMS: 5000,
+      connectTimeoutMS: 5000,
+    };
+
+    cached.promise = mongoose
+      .connect(process.env.MONGO_URI, opts)
+      .then((m) => {
+        console.log(`MongoDB Connected: ${m.connection.host}`);
+        cached.conn = m.connection;
+        return cached.conn;
+      })
+      .catch((err) => {
+        cached.promise = null;
+        cached.conn = null;
+        console.error("MongoDB connection error:", err.message);
+        throw err;
+      });
+  }
 
   try {
-    const conn = await mongoose.connect(process.env.MONGO_URI);
-    console.log(`MongoDB Connected: ${conn.connection.host}`);
-    return conn;
-  } catch (error) {
-    console.error("MongoDB connection error:", error.message);
-    if (!process.env.VERCEL) {
-      process.exit(1);
-    }
-    throw error;
+    cached.conn = await cached.promise;
+    return cached.conn;
+  } catch (err) {
+    cached.promise = null;
+    cached.conn = null;
+    throw err;
   }
 };

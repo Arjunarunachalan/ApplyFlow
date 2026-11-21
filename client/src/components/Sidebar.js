@@ -12,6 +12,8 @@ import {
   UserRound,
 } from "lucide-react";
 
+import InstallAppButton from "@/components/InstallAppButton";
+
 const NAV_ITEMS = [
   { href: "/", label: "Jobs", icon: Briefcase },
   { href: "/applications", label: "Applications", icon: Send },
@@ -31,7 +33,7 @@ export default function Sidebar() {
           <Sparkles className="h-5 w-5" />
         </span>
         <div>
-          <p className="text-sm font-semibold text-white">Auto-Apply</p>
+          <p className="text-sm font-semibold text-white">ApplyFlow</p>
           <p className="text-xs text-zinc-400">Job application manager</p>
         </div>
       </div>
@@ -56,12 +58,14 @@ export default function Sidebar() {
         })}
       </nav>
 
-      <div className="mt-auto rounded-lg border border-zinc-800 bg-zinc-900 p-3">
-        <p className="text-xs font-medium text-zinc-300">Phase 5</p>
-        <p className="mt-1 text-xs leading-relaxed text-zinc-500">
-          Gmail IMAP reply &amp; bounce detection, single-job quick add, interview
-          tracking, PDF export, and daily digest.
-        </p>
+      <div className="mt-auto flex flex-col gap-3">
+        <InstallAppButton />
+        <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-3">
+          <p className="text-xs font-medium text-zinc-300">ApplyFlow v1.0</p>
+          <p className="mt-1 text-xs leading-relaxed text-zinc-500">
+            Automated application drafting, resume parsing, and interview tracking.
+          </p>
+        </div>
       </div>
     </aside>
   );

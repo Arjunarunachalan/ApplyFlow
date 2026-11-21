@@ -22,14 +22,15 @@ app.use(express.json());
 
 // Ensure MongoDB is connected before handling requests in serverless environments
 app.use(async (_req, res, next) => {
-  if (mongoose.connection.readyState < 1) {
-    try {
-      await connectDB();
-    } catch (err) {
-      return res.status(500).json({ error: "Database connection failed" });
-    }
+  try {
+    await connectDB();
+    next();
+  } catch (err) {
+    console.error("Database connection middleware error:", err.message);
+    return res.status(500).json({
+      error: `Database connection failed: ${err.message}. Please verify MONGO_URI in Vercel settings and ensure MongoDB Atlas allows access from all IPs (0.0.0.0/0).`,
+    });
   }
-  next();
 });
 
 app.use("/api/jobs", jobRoutes);
