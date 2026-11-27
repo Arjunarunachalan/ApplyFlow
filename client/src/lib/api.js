@@ -23,8 +23,14 @@ export const API_BASE_URL = getApiBaseUrl();
 
 export const api = axios.create({
   baseURL: API_BASE_URL,
+  withCredentials: true,
   headers: { "Content-Type": "application/json" },
 });
+
+let unauthorizedHandler = null;
+export const setUnauthorizedHandler = (fn) => {
+  unauthorizedHandler = fn;
+};
 
 api.interceptors.request.use((config) => {
   if (!config.baseURL) {
@@ -33,11 +39,40 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const status = error?.response?.status;
+    const url = error?.config?.url || "";
+    if (
+      status === 401 &&
+      typeof unauthorizedHandler === "function" &&
+      !url.includes("/auth/login") &&
+      !url.includes("/auth/setup") &&
+      !url.includes("/auth/status")
+    ) {
+      unauthorizedHandler();
+    }
+    return Promise.reject(error);
+  },
+);
+
 const unwrap = (request) => request.then((response) => response.data);
+
+export const authApi = {
+  status: () => unwrap(api.get("/auth/status")),
+  setup: (payload) => unwrap(api.post("/auth/setup", payload)),
+  login: (payload) => unwrap(api.post("/auth/login", payload)),
+  logout: () => unwrap(api.post("/auth/logout")),
+  me: () => unwrap(api.get("/auth/me")),
+};
 
 export const jobApi = {
   list: (params = {}) => unwrap(api.get("/jobs", { params })),
+  summary: () => unwrap(api.get("/jobs/summary")),
   create: (job) => unwrap(api.post("/jobs", job)),
+  update: (id, patch) => unwrap(api.patch(`/jobs/${id}`, patch)),
+  archive: (id, archived = true) => unwrap(api.patch(`/jobs/${id}/archive`, { archived })),
   remove: (id) => unwrap(api.delete(`/jobs/${id}`)),
   setStatus: (id, status) => unwrap(api.patch(`/jobs/${id}/status`, { status })),
   setInterview: (id, interview) => unwrap(api.patch(`/jobs/${id}/interview`, interview)),
@@ -82,6 +117,9 @@ export const applicationApi = {
   generate: (jobId, options = {}) => unwrap(api.post(`/applications/generate/${jobId}`, options)),
   generateBatch: (payload) => unwrap(api.post("/applications/generate-batch", payload)),
   generateFollowUp: (id) => unwrap(api.post(`/applications/${id}/generate-followup`)),
+  approveOnly: (id) => unwrap(api.post(`/applications/${id}/approve`)),
+  approveOnlyBatch: (applicationIds) =>
+    unwrap(api.post("/applications/approve-only-batch", { applicationIds })),
   approveBatch: (applicationIds) =>
     unwrap(api.post("/applications/approve-batch", { applicationIds })),
   setStatus: (id, status) =>
@@ -98,6 +136,15 @@ export const applicationApi = {
   get exportPdfUrl() {
     return `${getApiBaseUrl()}/applications/export-pdf`;
   },
+};
+
+export const importsApi = {
+  list: (params = {}) => unwrap(api.get("/imports", { params })),
+};
+
+export const settingsApi = {
+  get: () => unwrap(api.get("/settings")),
+  updateEmail: (payload) => unwrap(api.put("/settings/email", payload)),
 };
 
 export const profileApi = {

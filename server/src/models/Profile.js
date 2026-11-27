@@ -10,10 +10,9 @@ const projectSchema = new mongoose.Schema(
   { _id: false },
 );
 
-// A single candidate profile for now, which is why there is no owner field.
-// Timestamps keep the shape ready for a future multi-user version.
 const profileSchema = new mongoose.Schema(
   {
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", index: true },
     fullName: { type: String, trim: true, default: "" },
     headline: { type: String, trim: true, default: "" },
     email: { type: String, trim: true, lowercase: true, default: "" },
@@ -27,7 +26,12 @@ const profileSchema = new mongoose.Schema(
     portfolioUrl: { type: String, trim: true, default: "" },
     githubUrl: { type: String, trim: true, default: "" },
     linkedinUrl: { type: String, trim: true, default: "" },
-    dailyEmailLimit: { type: Number, min: 1, default: 30 },
+    // Conservative application-level sending controls (auto-send explicitly off by default)
+    dailyEmailLimit: { type: Number, min: 1, default: 20 },
+    batchEmailLimit: { type: Number, min: 1, max: 50, default: 10 },
+    sendDelaySeconds: { type: Number, min: 15, default: 60 },
+    maxRetries: { type: Number, min: 0, max: 5, default: 2 },
+    autoSendEnabled: { type: Boolean, default: false },
   },
   { timestamps: true },
 );
@@ -46,7 +50,11 @@ export const DEFAULT_PROFILE = {
   portfolioUrl: "",
   githubUrl: "",
   linkedinUrl: "",
-  dailyEmailLimit: Number(process.env.DAILY_EMAIL_LIMIT) || 30,
+  dailyEmailLimit: Number(process.env.DAILY_EMAIL_LIMIT) || 20,
+  batchEmailLimit: 10,
+  sendDelaySeconds: 60,
+  maxRetries: 2,
+  autoSendEnabled: false,
 };
 
 export const defaultProfile = () => ({ ...DEFAULT_PROFILE, skills: [], projects: [] });

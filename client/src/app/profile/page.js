@@ -18,7 +18,7 @@ const EMPTY_FORM = {
   portfolioUrl: "",
   githubUrl: "",
   linkedinUrl: "",
-  dailyEmailLimit: 30,
+  dailyEmailLimit: 20,
   projects: [],
 };
 
@@ -36,7 +36,7 @@ const toForm = (profile) => ({
   ...EMPTY_FORM,
   ...profile,
   yearsOfExperience: profile?.yearsOfExperience ?? "",
-  dailyEmailLimit: profile?.dailyEmailLimit ?? 30,
+  dailyEmailLimit: profile?.dailyEmailLimit ?? 20,
   skills: Array.isArray(profile?.skills) ? profile.skills.join(", ") : "",
   projects: Array.isArray(profile?.projects) ? profile.projects.map(toProject) : [],
 });

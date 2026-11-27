@@ -3,7 +3,7 @@
 import { create } from "zustand";
 import { applicationApi, errorMessage } from "@/lib/api";
 
-const initialQuota = { sentToday: 0, queued: 0, dailyLimit: 30, remaining: 30 };
+const initialQuota = { sentToday: 0, queued: 0, dailyLimit: 20, remaining: 20 };
 
 export const useApplicationStore = create((set, get) => ({
   applications: [],

@@ -3,12 +3,47 @@
 import { create } from "zustand";
 import { applicationApi, errorMessage, jobApi, resumeApi, syncApi } from "@/lib/api";
 
-const initialFilters = { search: "", type: "all", status: "all" };
+export const initialJobFilters = {
+  search: "",
+  type: "all",
+  status: "all",
+  lifecycleStatus: "all",
+  contactFilter: "all",
+  dateField: "createdAt",
+  datePreset: "",
+  dateFrom: "",
+  dateTo: "",
+  company: "",
+  jobTitle: "",
+  location: "",
+  experience: "",
+  workArrangement: "all",
+  sourcePlatform: "",
+  importType: "all",
+  resumeId: "all",
+  sort: "newest",
+  page: 1,
+  limit: 25,
+};
+
+const EMPTY_SUMMARY = {
+  pendingVacancies: 0,
+  emailAvailable: 0,
+  emailNotFound: 0,
+  draftsReady: 0,
+  approvedReadyToSend: 0,
+  failedApplications: 0,
+};
 
 export const useJobStore = create((set, get) => ({
   jobs: [],
+  total: 0,
+  page: 1,
+  limit: 25,
+  totalPages: 1,
+  summary: EMPTY_SUMMARY,
   resumes: [],
-  filters: initialFilters,
+  filters: initialJobFilters,
 
   loading: false,
   resumesLoading: false,
@@ -24,22 +59,66 @@ export const useJobStore = create((set, get) => ({
   bulkApplying: false,
   bulkProgress: null,
 
-  setFilter: (patch) => set((state) => ({ filters: { ...state.filters, ...patch } })),
-  resetFilters: () => set({ filters: initialFilters }),
+  setFilter: (patch) =>
+    set((state) => ({
+      filters: {
+        ...state.filters,
+        ...patch,
+        // Reset page to 1 when any non-page filter changes
+        page: patch.page !== undefined ? patch.page : 1,
+      },
+    })),
 
-  fetchJobs: async () => {
-    const { search, type, status } = get().filters;
+  resetFilters: () => set({ filters: initialJobFilters }),
+
+  fetchJobs: async (overrides = {}) => {
+    const f = { ...get().filters, ...overrides };
     set({ loading: true, error: null });
     try {
-      const params = {};
-      if (search.trim()) params.search = search.trim();
-      if (type !== "all") params.type = type;
-      if (status !== "all") params.status = status;
+      const params = {
+        scope: f.scope || "all",
+        sort: f.sort || "newest",
+        page: f.page || 1,
+        limit: f.limit || 25,
+      };
+      if (f.search?.trim()) params.search = f.search.trim();
+      if (f.type && f.type !== "all") params.type = f.type;
+      if (f.lifecycleStatus && f.lifecycleStatus !== "all") {
+        params.lifecycleStatus = f.lifecycleStatus;
+      } else if (f.status && f.status !== "all") {
+        params.status = f.status;
+      }
+      if (f.contactFilter && f.contactFilter !== "all") params.contactFilter = f.contactFilter;
+      if (f.dateField) params.dateField = f.dateField;
+      if (f.datePreset) params.datePreset = f.datePreset;
+      if (f.dateFrom) params.dateFrom = f.dateFrom;
+      if (f.dateTo) params.dateTo = f.dateTo;
+      if (f.company?.trim()) params.company = f.company.trim();
+      if (f.jobTitle?.trim()) params.jobTitle = f.jobTitle.trim();
+      if (f.location?.trim()) params.location = f.location.trim();
+      if (f.experience?.trim()) params.experience = f.experience.trim();
+      if (f.workArrangement && f.workArrangement !== "all") {
+        params.workArrangement = f.workArrangement;
+      }
+      if (f.sourcePlatform?.trim()) params.sourcePlatform = f.sourcePlatform.trim();
+      if (f.importType && f.importType !== "all") params.importType = f.importType;
+      if (f.resumeId && f.resumeId !== "all") params.resumeId = f.resumeId;
 
-      const jobs = await jobApi.list(params);
-      set({ jobs, loading: false });
+      const data = await jobApi.list(params);
+      const items = Array.isArray(data) ? data : data.items || [];
+      set({
+        jobs: items,
+        total: data.total ?? items.length,
+        page: data.page ?? params.page,
+        limit: data.limit ?? params.limit,
+        totalPages: data.totalPages ?? 1,
+        summary: data.summary || get().summary,
+        loading: false,
+      });
+      return data;
     } catch (error) {
       set({ error: errorMessage(error), loading: false });
+      return null;
     }
   },
 
@@ -47,8 +126,36 @@ export const useJobStore = create((set, get) => ({
     try {
       await jobApi.remove(id);
       set((state) => ({ jobs: state.jobs.filter((job) => job._id !== id) }));
+      return true;
     } catch (error) {
       set({ error: errorMessage(error) });
+      return false;
+    }
+  },
+
+  archiveJob: async (id, archived = true) => {
+    try {
+      const updated = await jobApi.archive(id, archived);
+      set((state) => ({
+        jobs: state.jobs.map((job) => (job._id === id ? { ...job, ...updated } : job)),
+      }));
+      return updated;
+    } catch (error) {
+      set({ error: errorMessage(error) });
+      return null;
+    }
+  },
+
+  updateJobDetails: async (id, patch) => {
+    try {
+      const updated = await jobApi.update(id, patch);
+      set((state) => ({
+        jobs: state.jobs.map((job) => (job._id === id ? { ...job, ...updated } : job)),
+      }));
+      return updated;
+    } catch (error) {
+      set({ error: errorMessage(error) });
+      throw error;
     }
   },
 
@@ -57,7 +164,6 @@ export const useJobStore = create((set, get) => ({
     try {
       const application = await applicationApi.generate(jobId, options);
       set({ generatingJobId: null });
-      await get().fetchJobs();
       return application;
     } catch (error) {
       set({ generatingJobId: null, error: errorMessage(error) });
@@ -70,7 +176,6 @@ export const useJobStore = create((set, get) => ({
     try {
       const result = await applicationApi.autoApply(jobId, options);
       set({ applyingJobId: null });
-      await get().fetchJobs();
       return result;
     } catch (error) {
       set({ applyingJobId: null, error: errorMessage(error) });
@@ -88,7 +193,6 @@ export const useJobStore = create((set, get) => ({
     try {
       const result = await applicationApi.autoApplyBatch({ jobIds, tone });
       set({ bulkApplying: false, bulkProgress: null });
-      await get().fetchJobs();
       return result;
     } catch (error) {
       set({ bulkApplying: false, bulkProgress: null, error: errorMessage(error) });
@@ -96,8 +200,6 @@ export const useJobStore = create((set, get) => ({
     }
   },
 
-  // Drafts are generated one at a time by the API, so the bar reports the
-  // batch size while the request is in flight.
   generateDrafts: async (jobIds, tone = "direct") => {
     if (!jobIds.length) return null;
     set({
@@ -108,7 +210,6 @@ export const useJobStore = create((set, get) => ({
     try {
       const result = await applicationApi.generateBatch({ jobIds, tone });
       set({ bulkDrafting: false, bulkProgress: null });
-      await get().fetchJobs();
       return result;
     } catch (error) {
       set({ bulkDrafting: false, bulkProgress: null, error: errorMessage(error) });
@@ -123,8 +224,10 @@ export const useJobStore = create((set, get) => ({
       set((state) => ({
         jobs: state.jobs.map((item) => (item._id === id ? { ...item, ...job } : item)),
       }));
+      return job;
     } catch (error) {
       set({ error: errorMessage(error) });
+      return null;
     }
   },
 
@@ -160,7 +263,7 @@ export const useJobStore = create((set, get) => ({
   fetchUpcomingInterviews: async () => {
     try {
       return await jobApi.upcomingInterviews();
-    } catch (error) {
+    } catch {
       return [];
     }
   },
@@ -180,7 +283,6 @@ export const useJobStore = create((set, get) => ({
     try {
       const summary = await jobApi.importCsv(file);
       set({ importing: false, lastImport: summary });
-      await get().fetchJobs();
       return summary;
     } catch (error) {
       set({ importing: false, error: errorMessage(error) });

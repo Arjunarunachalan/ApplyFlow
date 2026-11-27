@@ -1,439 +1,330 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
-  Briefcase,
+  AlertTriangle,
+  Archive,
   Calendar,
+  Camera,
   CheckCheck,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
   ExternalLink,
+  Eye,
+  FileEdit,
   Inbox,
   Loader2,
-  Lock,
   Mail,
+  MailWarning,
   Search,
   Send,
   Sparkles,
-  Trash2,
   Upload,
   Video,
-  X,
 } from "lucide-react";
-import StatCard from "@/components/StatCard";
-import { MatchBadge, StatusBadge, TypeBadge } from "@/components/Badges";
+import {
+  ContactStatusBadge,
+  MatchBadge,
+  StatusBadge,
+} from "@/components/Badges";
+import { useConfirm, useToast } from "@/components/ToastProvider";
+import VacancyDetailModal from "@/components/VacancyDetailModal";
+import { applicationApi, errorMessage } from "@/lib/api";
 import { useJobStore } from "@/store/useJobStore";
 
-const STATUS_OPTIONS = [
-  "new",
-  "draft_ready",
-  "approved",
-  "queued",
-  "sent",
-  "replied",
-  "interview",
-  "rejected",
-  "failed",
-];
+const formatDate = (value) => {
+  if (!value) return "—";
+  return new Date(value).toLocaleDateString(undefined, {
+    day: "2-digit",
+    month: "short",
+  });
+};
 
-const TONES = [
-  { value: "direct", label: "Direct" },
-  { value: "enthusiastic", label: "Enthusiastic" },
-  { value: "founder", label: "Founder" },
-];
-
-const inputClass =
-  "rounded-lg border border-zinc-200 px-3 py-2 text-sm text-zinc-800 shadow-sm outline-none placeholder:text-zinc-400 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100";
-
-const selectClass =
-  "rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-700 shadow-sm outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100";
-
-// Only a job that can still get a first draft is worth selecting.
-const isSelectable = (job) =>
-  job.applicationType === "email" &&
-  Boolean(job.hrEmail) &&
-  !["queued", "sent"].includes(job.status);
-
-export default function JobsDashboard() {
-  const jobs = useJobStore((state) => state.jobs);
-  const loading = useJobStore((state) => state.loading);
-  const error = useJobStore((state) => state.error);
-  const filters = useJobStore((state) => state.filters);
-  const setFilter = useJobStore((state) => state.setFilter);
-  const fetchJobs = useJobStore((state) => state.fetchJobs);
-  const deleteJob = useJobStore((state) => state.deleteJob);
-  const generatingJobId = useJobStore((state) => state.generatingJobId);
-  const applyingJobId = useJobStore((state) => state.applyingJobId);
-  const generateDraft = useJobStore((state) => state.generateDraft);
-  const autoApply = useJobStore((state) => state.autoApply);
-  const bulkDrafting = useJobStore((state) => state.bulkDrafting);
-  const bulkApplying = useJobStore((state) => state.bulkApplying);
-  const bulkProgress = useJobStore((state) => state.bulkProgress);
-  const generateDrafts = useJobStore((state) => state.generateDrafts);
-  const autoApplyBatch = useJobStore((state) => state.autoApplyBatch);
-  const markJobStatus = useJobStore((state) => state.markJobStatus);
-  const createJob = useJobStore((state) => state.createJob);
-  const setInterview = useJobStore((state) => state.setInterview);
-  const fetchUpcomingInterviews = useJobStore((state) => state.fetchUpcomingInterviews);
-  const syncReplies = useJobStore((state) => state.syncReplies);
+export default function DashboardPage() {
   const router = useRouter();
+  const toast = useToast();
+  const confirm = useConfirm();
 
-  const [selectedIds, setSelectedIds] = useState([]);
-  const [tone, setTone] = useState("direct");
-  const [notice, setNotice] = useState(null);
+  const jobs = useJobStore((s) => s.jobs);
+  const summary = useJobStore((s) => s.summary);
+  const total = useJobStore((s) => s.total);
+  const totalPages = useJobStore((s) => s.totalPages);
+  const loading = useJobStore((s) => s.loading);
+  const error = useJobStore((s) => s.error);
+  const generatingJobId = useJobStore((s) => s.generatingJobId);
 
-  // + Add Job modal state
-  const [addJobOpen, setAddJobOpen] = useState(false);
-  const [newJob, setNewJob] = useState({
-    companyName: "",
-    jobRole: "",
-    hrEmail: "",
-    applyUrl: "",
-    jobDescription: "",
-    location: "",
-    companyWebsite: "",
-    salary: "",
-  });
-  const [addingJob, setAddingJob] = useState(false);
+  const fetchJobs = useJobStore((s) => s.fetchJobs);
+  const generateDraft = useJobStore((s) => s.generateDraft);
+  const archiveJob = useJobStore((s) => s.archiveJob);
+  const updateJobDetails = useJobStore((s) => s.updateJobDetails);
+  const fetchUpcomingInterviews = useJobStore((s) => s.fetchUpcomingInterviews);
 
-  // Interview scheduling state
-  const [interviewOpen, setInterviewOpen] = useState(false);
-  const [schedulingJob, setSchedulingJob] = useState(null);
-  const [interviewForm, setInterviewForm] = useState({
-    date: "",
-    meetingUrl: "",
-    round: "",
-    notes: "",
-  });
-  const [schedulingInterview, setSchedulingInterview] = useState(false);
-
-  // Sync replies state
-  const [syncing, setSyncing] = useState(false);
-  const [syncResult, setSyncResult] = useState(null);
-
-  const selectableJobs = useMemo(() => jobs.filter(isSelectable), [jobs]);
-  const allSelected =
-    selectableJobs.length > 0 &&
-    selectableJobs.every((job) => selectedIds.includes(job._id));
-
-  const onGenerate = async (job) => {
-    const application = await generateDraft(job._id, { tone });
-    if (application) router.push("/applications");
-  };
-
-  const onAutoApply = async (job) => {
-    setNotice(null);
-    const result = await autoApply(job._id, { tone });
-    if (result?.application) {
-      setNotice(`Auto-applied to ${job.companyName}! Email dispatched with your attached resume.`);
-      fetchJobs();
-    }
-  };
-
-  const onBulkAutoApply = async () => {
-    setNotice(null);
-    const result = await autoApplyBatch(selectedIds, tone);
-    if (!result) return;
-    setNotice(
-      `Batch auto-applied: ${result.queued ?? result.applied ?? 0} application${(result.queued ?? result.applied) === 1 ? "" : "s"} queued` +
-        (result.skipped ? ` · ${result.skipped} skipped` : "") +
-        (result.stoppedByQuota ? " · stopped by daily limit" : "") +
-        (result.failed ? ` · ${result.failed} failed` : "") +
-        (result.remainingQuota !== undefined ? ` · ${result.remainingQuota} daily quota remaining` : "") +
-        ". Check the Applications page.",
-    );
-    setSelectedIds([]);
-  };
-
-  const toggleJob = (id) =>
-    setSelectedIds((prev) =>
-      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id],
-    );
-
-  const toggleAll = () =>
-    setSelectedIds(allSelected ? [] : selectableJobs.map((job) => job._id));
-
-  // Add Job handlers
-  const openAddJob = () => {
-    setNewJob({
-      companyName: "",
-      jobRole: "",
-      hrEmail: "",
-      applyUrl: "",
-      jobDescription: "",
-      location: "",
-      companyWebsite: "",
-      salary: "",
-    });
-    setAddJobOpen(true);
-  };
-
-  const closeAddJob = () => {
-    setAddJobOpen(false);
-    setNewJob({
-      companyName: "",
-      jobRole: "",
-      hrEmail: "",
-      applyUrl: "",
-      jobDescription: "",
-      location: "",
-      companyWebsite: "",
-      salary: "",
-    });
-    setNotice(null);
-  };
-
-  const handleAddJob = async () => {
-    setAddingJob(true);
-    setNotice(null);
-    try {
-      const created = await createJob(newJob);
-      setAddingJob(false);
-      const job = created?.job || created;
-      if (job) {
-        setAddJobOpen(false);
-        setNotice(`${job.companyName} · ${job.jobRole} added.`);
-        fetchJobs();
-      }
-    } catch (err) {
-      setAddingJob(false);
-      setNotice(`Failed to add job: ${err?.response?.data?.error || err.message}`);
-    }
-  };
-
-  // Interview scheduling handlers
-  const openScheduleInterview = (job) => {
-    setSchedulingJob(job);
-    setInterviewForm({
-      date: job.interview?.date ? new Date(job.interview.date).toISOString().slice(0, 16) : "",
-      meetingUrl: job.interview?.meetingUrl || "",
-      round: job.interview?.round || "",
-      notes: job.interview?.notes || "",
-    });
-    setInterviewOpen(true);
-  };
-
-  const closeScheduleInterview = () => {
-    setInterviewOpen(false);
-    setSchedulingJob(null);
-    setNotice(null);
-  };
-
-  const handleScheduleInterview = async () => {
-    if (!schedulingJob) return;
-    setSchedulingInterview(true);
-    setNotice(null);
-    const parsed = new Date(interviewForm.date);
-    const interview = {
-      date: isNaN(parsed.getTime()) ? undefined : parsed,
-      meetingUrl: interviewForm.meetingUrl,
-      round: interviewForm.round,
-      notes: interviewForm.notes,
-    };
-    const updated = await setInterview(schedulingJob._id, interview);
-    setSchedulingInterview(false);
-    if (updated) {
-      closeScheduleInterview();
-      setUpcomingInterviews((prev) =>
-        prev.filter((j) => j._id !== updated._id).concat(updated).sort((a, b) =>
-          new Date(a.interview.date) - new Date(b.interview.date),
-        ),
-      );
-      fetchJobs();
-    }
-  };
-
-  // Sync replies handler
-  const handleSyncReplies = async () => {
-    setSyncing(true);
-    setSyncResult(null);
-    setNotice(null);
-    const result = await syncReplies();
-    setSyncing(false);
-    setSyncResult(result);
-    if (result.error) {
-      setNotice(`Sync failed: ${result.error}`);
-    } else if (result.repliesFound || result.bouncesFound) {
-      const parts = [];
-      if (result.repliesFound) parts.push(`${result.repliesFound} reply${result.repliesFound > 1 ? "es" : ""}`);
-      if (result.bouncesFound) parts.push(`${result.bouncesFound} bounce${result.bouncesFound > 1 ? "s" : ""}`);
-      setNotice(`Sync complete: ${result.checked} checked · ${parts.join(" · ")} found.`);
-      fetchJobs();
-    } else {
-      setNotice(`Sync complete: ${result.checked} checked · no new replies or bounces.`);
-    }
-  };
-
-  const onBulkGenerate = async () => {
-    setNotice(null);
-    const result = await generateDrafts(selectedIds, tone);
-    if (!result) return;
-    setNotice(
-      `${result.generated} personalized draft${result.generated === 1 ? "" : "s"} generated` +
-        (result.skipped ? ` · ${result.skipped} skipped` : "") +
-        (result.failed ? ` · ${result.failed} failed` : "") +
-        ". Review them on the Applications page.",
-    );
-    setSelectedIds([]);
-  };
-
+  const [activeCard, setActiveCard] = useState("pending");
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [detailJob, setDetailJob] = useState(null);
+  const [busyJobId, setBusyJobId] = useState(null);
   const [upcomingInterviews, setUpcomingInterviews] = useState([]);
 
-  useEffect(() => {
-    const timeout = setTimeout(() => {
-      fetchJobs();
-    }, 250);
-    return () => clearTimeout(timeout);
-  }, [filters.search, filters.type, filters.status, fetchJobs]);
+  const cardFilterParams = useCallback(() => {
+    switch (activeCard) {
+      case "email_available":
+        return { scope: "pending", contactFilter: "email_available" };
+      case "email_not_found":
+        return { scope: "pending", contactFilter: "email_not_available" };
+      case "drafts_ready":
+        return { scope: "pending", lifecycleStatus: "DRAFT_READY" };
+      case "approved_queue":
+        return { scope: "pending", lifecycleStatus: "APPROVED_QUEUE" };
+      case "failed":
+        return { scope: "pending", lifecycleStatus: "FAILED" };
+      case "pending":
+      default:
+        return { scope: "pending" };
+    }
+  }, [activeCard]);
 
-  // Load upcoming interviews once on mount
+  const reload = useCallback(() => {
+    fetchJobs({
+      ...cardFilterParams(),
+      search,
+      sort: "newest",
+      page,
+      limit: 15,
+    });
+  }, [cardFilterParams, fetchJobs, page, search]);
+
+  useEffect(() => {
+    const timer = setTimeout(reload, 200);
+    return () => clearTimeout(timer);
+  }, [reload]);
+
   useEffect(() => {
     fetchUpcomingInterviews().then(setUpcomingInterviews);
   }, [fetchUpcomingInterviews]);
 
-  const total = jobs.length;
-  const emailJobs = jobs.filter((job) => job.applicationType === "email").length;
-  const portalJobs = jobs.filter((job) => job.applicationType === "portal").length;
-  const sentJobs = jobs.filter((job) => job.status === "sent").length;
-  const selectedCount = selectedIds.length;
+  const handleCardSelect = (cardKey) => {
+    setPage(1);
+    setActiveCard((prev) => (prev === cardKey && cardKey !== "pending" ? "pending" : cardKey));
+  };
+
+  const handleGenerateEmail = async (job) => {
+    const app = await generateDraft(job._id, { tone: "direct" });
+    if (app) {
+      toast.success(`Email draft generated for ${job.companyName}.`);
+      reload();
+    }
+  };
+
+  const handleApproveAndQueue = async (job, sendNow = false) => {
+    const ok = await confirm({
+      title: sendNow ? "Send Application Email Now?" : "Approve & Queue Application?",
+      message: sendNow
+        ? `Approve draft and send email immediately to ${job.hrEmail}?`
+        : `Approve draft for ${job.companyName} and add it to the Sending Queue?`,
+      confirmLabel: sendNow ? "Send Now" : "Approve & Queue",
+    });
+    if (!ok) return;
+
+    setBusyJobId(job._id);
+    try {
+      const { applications } = await applicationApi.list("draft");
+      const draft = (applications || []).find((a) => (a.jobId?._id || a.jobId) === job._id);
+      if (!draft) {
+        toast.info("Open Email Drafts to review this draft first.");
+        router.push("/drafts");
+        return;
+      }
+      if (sendNow) {
+        await applicationApi.sendNow(draft._id);
+        toast.success(`Send request accepted for ${job.companyName}.`);
+      } else {
+        await applicationApi.approve(draft._id);
+        toast.success(`Approved & queued ${job.companyName}.`);
+      }
+      reload();
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setBusyJobId(null);
+    }
+  };
+
+  const handleArchive = async (job) => {
+    const ok = await confirm({
+      title: "Archive Vacancy?",
+      message: `Archive ${job.companyName} · ${job.jobRole}? You can restore it anytime from All Vacancies.`,
+      confirmLabel: "Archive",
+    });
+    if (!ok) return;
+
+    const updated = await archiveJob(job._id, true);
+    if (updated) {
+      toast.success("Vacancy archived.");
+      if (detailJob?._id === job._id) setDetailJob(null);
+      reload();
+    }
+  };
+
+  const cards = [
+    {
+      key: "pending",
+      label: "Pending Vacancies",
+      value: summary?.pendingVacancies ?? 0,
+      icon: Clock,
+      accent: "text-indigo-600",
+    },
+    {
+      key: "email_available",
+      label: "Email Available",
+      value: summary?.emailAvailable ?? 0,
+      icon: Mail,
+      accent: "text-emerald-600",
+    },
+    {
+      key: "email_not_found",
+      label: "Email Not Found",
+      value: summary?.emailNotFound ?? 0,
+      icon: MailWarning,
+      accent: "text-amber-600",
+    },
+    {
+      key: "drafts_ready",
+      label: "Drafts Ready for Review",
+      value: summary?.draftsReady ?? 0,
+      icon: FileEdit,
+      accent: "text-violet-600",
+    },
+    {
+      key: "approved_queue",
+      label: "Approved / Ready to Send",
+      value: summary?.approvedReadyToSend ?? 0,
+      icon: Send,
+      accent: "text-sky-600",
+    },
+    {
+      key: "failed",
+      label: "Failed Applications",
+      value: summary?.failedApplications ?? 0,
+      icon: AlertTriangle,
+      accent: "text-rose-600",
+    },
+  ];
 
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">Jobs</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">Dashboard</h1>
           <p className="mt-1 text-sm text-zinc-500">
-            Every imported lead, scored against your profile and classified as an email or
-            portal application.
+            Actionable vacancies only — sent applications stay in{" "}
+            <Link href="/sent" className="font-medium text-indigo-600 hover:underline">
+              Sent Applications
+            </Link>
+            .
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={handleSyncReplies}
-            disabled={syncing}
-            className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm font-medium text-zinc-700 shadow-sm hover:bg-zinc-50 disabled:opacity-60"
+
+        <div className="flex flex-wrap items-center gap-2">
+          <Link
+            href="/quick-apply"
+            className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-700"
           >
-            {syncing ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Mail className="h-4 w-4" />
-            )}
-            {syncing ? "Syncing…" : "Sync Replies"}
-          </button>
-          {syncResult && (syncResult.repliesFound || syncResult.bouncesFound) && (
-            <p className="text-xs text-emerald-700">
-              {syncResult.repliesFound} reply(s) · {syncResult.bouncesFound} bounce(s) found
-            </p>
-          )}
-          <button
-            type="button"
-            onClick={openAddJob}
-            className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-indigo-700"
-          >
-            <Send className="h-4 w-4" />
-            + Add Job
-          </button>
+            <Camera className="h-4 w-4" />
+            Quick Apply (Screenshots)
+          </Link>
           <Link
             href="/import"
-            className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm font-medium text-zinc-700 shadow-sm hover:bg-zinc-50"
+            className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3.5 py-2 text-sm font-medium text-zinc-700 shadow-sm hover:bg-zinc-50"
           >
             <Upload className="h-4 w-4" />
-            Add / Import Jobs
+            Manual / CSV Add
           </Link>
         </div>
       </header>
 
-      {upcomingInterviews.length > 0 && (
-        <section className="rounded-xl border border-indigo-200 bg-indigo-50/70 p-4 shadow-sm">
-          <div className="flex items-center gap-2">
-            <Calendar className="h-4 w-4 text-indigo-600" />
-            <h2 className="text-sm font-semibold text-indigo-900">Upcoming Interviews</h2>
-          </div>
-          <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {upcomingInterviews.map((job) => (
-              <div
-                key={job._id}
-                className="rounded-lg border border-indigo-100 bg-white p-3 shadow-sm"
-              >
-                <p className="font-medium text-zinc-900">{job.companyName}</p>
-                <p className="text-xs text-zinc-500">{job.jobRole}</p>
-                <div className="mt-2 flex items-center gap-2 text-xs text-indigo-700">
-                  <Video className="h-3.5 w-3.5" />
-                  <span className="font-medium">{job.interview?.round || "Interview"}</span>
-                </div>
-                <p className="mt-1 text-xs text-zinc-600">
-                  {job.interview?.date
-                    ? new Date(job.interview.date).toLocaleDateString(undefined, {
-                        dateStyle: "medium",
-                      })
-                    : "—"}
-                </p>
-                {job.interview?.meetingUrl && (
-                  <a
-                    href={job.interview.meetingUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="mt-1 inline-flex items-center gap-1 text-xs text-indigo-600 hover:underline"
-                  >
-                    Join meeting
-                    <ExternalLink className="h-3 w-3" />
-                  </a>
-                )}
-                <button
-                  type="button"
-                  onClick={() => openScheduleInterview(job)}
-                  className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-indigo-600 hover:text-indigo-800"
-                >
-                  Edit interview
-                  <X className="h-3 w-3" />
-                </button>
+      {/* 6 Clickable Summary Cards */}
+      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+        {cards.map((card) => {
+          const Icon = card.icon;
+          const isSelected = activeCard === card.key;
+          return (
+            <button
+              key={card.key}
+              type="button"
+              onClick={() => handleCardSelect(card.key)}
+              className={`flex flex-col justify-between rounded-xl border p-4 text-left transition-all ${
+                isSelected
+                  ? "border-indigo-500 bg-indigo-50/40 ring-2 ring-indigo-100"
+                  : "border-zinc-200 bg-white hover:border-zinc-300 hover:shadow-sm"
+              }`}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <p className="text-xs font-medium text-zinc-500">{card.label}</p>
+                <Icon className={`h-4 w-4 shrink-0 ${card.accent}`} />
               </div>
-            ))}
-          </div>
-        </section>
-      )}
-
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Total Jobs" value={total} icon={Briefcase} />
-        <StatCard label="Email Applications" value={emailJobs} icon={Mail} accent="text-indigo-600" />
-        <StatCard label="Portal Applications" value={portalJobs} icon={ExternalLink} accent="text-cyan-600" />
-        <StatCard label="Sent" value={sentJobs} icon={Send} accent="text-emerald-600" />
+              <p className="mt-2.5 text-2xl font-semibold tracking-tight text-zinc-900 tabular-nums">
+                {card.value}
+              </p>
+            </button>
+          );
+        })}
       </section>
 
-      <section className="flex flex-col gap-3 rounded-xl border border-zinc-200 bg-white p-4 shadow-sm sm:flex-row sm:items-center">
-        <div className="relative flex-1">
+      {upcomingInterviews.length > 0 ? (
+        <section className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-indigo-200 bg-indigo-50/60 px-4 py-3 text-xs">
+          <div className="flex items-center gap-2 font-medium text-indigo-950">
+            <Calendar className="h-4 w-4 text-indigo-600" />
+            <span>
+              {upcomingInterviews.length} upcoming interview
+              {upcomingInterviews.length === 1 ? "" : "s"} scheduled — next:{" "}
+              <strong>{upcomingInterviews[0].companyName}</strong> ({upcomingInterviews[0].jobRole})
+            </span>
+          </div>
+          {upcomingInterviews[0].interview?.meetingUrl ? (
+            <a
+              href={upcomingInterviews[0].interview.meetingUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 font-medium text-indigo-700 hover:underline"
+            >
+              <Video className="h-3.5 w-3.5" /> Join Link
+            </a>
+          ) : null}
+        </section>
+      ) : null}
+
+      {/* Quick Action Search Bar */}
+      <section className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white px-4 py-3 shadow-sm">
+        <div className="relative min-w-[240px] flex-1">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
           <input
-            value={filters.search}
-            onChange={(event) => setFilter({ search: event.target.value })}
-            placeholder="Search company, role, email…"
-            className="w-full rounded-lg border border-zinc-200 bg-white py-2 pl-9 pr-3 text-sm text-zinc-800 shadow-sm outline-none placeholder:text-zinc-400 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+            value={search}
+            onChange={(e) => {
+              setPage(1);
+              setSearch(e.target.value);
+            }}
+            placeholder="Quick search pending vacancies by company, role, email, or location…"
+            className="w-full rounded-lg border border-zinc-200 py-1.5 pl-9 pr-3 text-sm text-zinc-800 outline-none placeholder:text-zinc-400 focus:border-indigo-400"
           />
         </div>
-
-        <select
-          value={filters.type}
-          onChange={(event) => setFilter({ type: event.target.value })}
-          className={selectClass}
-        >
-          <option value="all">All types</option>
-          <option value="email">Email</option>
-          <option value="portal">Portal</option>
-        </select>
-
-        <select
-          value={filters.status}
-          onChange={(event) => setFilter({ status: event.target.value })}
-          className={selectClass}
-        >
-          <option value="all">All statuses</option>
-          {STATUS_OPTIONS.map((status) => (
-            <option key={status} value={status}>
-              {status.replace(/_/g, " ")}
-            </option>
-          ))}
-        </select>
+        <div className="flex items-center gap-2 text-xs text-zinc-500">
+          <span>
+            Filter:{" "}
+            <strong className="text-zinc-800">
+              {cards.find((c) => c.key === activeCard)?.label}
+            </strong>
+          </span>
+          <Link
+            href="/pending"
+            className="rounded-lg border border-zinc-200 px-3 py-1.5 font-medium text-zinc-700 hover:bg-zinc-50"
+          >
+            Advanced Filters →
+          </Link>
+        </div>
       </section>
 
       {error ? (
@@ -442,293 +333,217 @@ export default function JobsDashboard() {
         </p>
       ) : null}
 
-      {notice ? (
-        <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-          {notice}
-        </p>
-      ) : null}
-
-      {selectedCount > 0 ? (
-        <section className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 shadow-sm">
-          <p className="text-sm font-medium text-indigo-900">
-            {selectedCount} job{selectedCount === 1 ? "" : "s"} selected
-          </p>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <label className="flex items-center gap-2 text-xs font-medium text-indigo-900">
-              Tone
-              <select
-                value={tone}
-                onChange={(event) => setTone(event.target.value)}
-                disabled={bulkDrafting}
-                className="rounded-lg border border-indigo-200 bg-white px-2.5 py-1.5 text-xs text-zinc-700 shadow-sm outline-none focus:border-indigo-400"
-              >
-                {TONES.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <button
-              type="button"
-              onClick={onBulkAutoApply}
-              disabled={bulkApplying || bulkDrafting}
-              className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3.5 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-300"
-            >
-              {bulkApplying ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Send className="h-4 w-4" />
-              )}
-              {bulkApplying
-                ? `Auto-Applying ${selectedCount}…`
-                : `Batch Auto-Apply (${selectedCount})`}
-            </button>
-
-            <button
-              type="button"
-              onClick={onBulkGenerate}
-              disabled={bulkDrafting || bulkApplying}
-              className="inline-flex items-center gap-2 rounded-lg border border-indigo-200 bg-white px-3 py-2 text-sm font-medium text-indigo-700 shadow-sm transition-colors hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {bulkDrafting ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Sparkles className="h-4 w-4" />
-              )}
-              {bulkDrafting
-                ? `Drafting ${bulkProgress?.total ?? selectedCount}…`
-                : `Generate Drafts (${selectedCount})`}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setSelectedIds([])}
-              disabled={bulkDrafting}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-white px-2.5 py-2 text-xs font-medium text-indigo-800 hover:bg-indigo-100 disabled:opacity-60"
-            >
-              <X className="h-3.5 w-3.5" />
-              Clear
-            </button>
-          </div>
-        </section>
-      ) : null}
-
+      {/* Pending Actionable Vacancies Table */}
       <section className="overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm">
         <div className="overflow-x-auto">
           <table className="min-w-full divide-y divide-zinc-200 text-sm">
             <thead className="bg-zinc-50 text-left text-xs font-semibold uppercase tracking-wide text-zinc-500">
               <tr>
-                <th className="w-10 px-4 py-3">
-                  <input
-                    type="checkbox"
-                    checked={allSelected}
-                    onChange={toggleAll}
-                    disabled={selectableJobs.length === 0}
-                    aria-label="Select all email jobs"
-                    className="h-4 w-4 rounded border-zinc-300 text-indigo-600 focus:ring-indigo-400"
-                  />
-                </th>
-                <th className="px-4 py-3">Company</th>
-                <th className="px-4 py-3">Role</th>
+                <th className="px-4 py-3">Company &amp; Role</th>
+                <th className="px-4 py-3">Recruitment Contact</th>
                 <th className="px-4 py-3">Match</th>
-                <th className="px-4 py-3">Type</th>
-                <th className="px-4 py-3">Contact</th>
                 <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3 text-right">Actions</th>
+                <th className="px-4 py-3">Added</th>
+                <th className="px-4 py-3 text-right">Next Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-100">
               {loading && jobs.length === 0 ? (
-                <tr>
-                  <td colSpan={8} className="px-5 py-12 text-center text-sm text-zinc-500">
-                    Loading jobs…
-                  </td>
-                </tr>
+                Array.from({ length: 4 }).map((_, idx) => (
+                  <tr key={idx} className="animate-pulse">
+                    <td colSpan={6} className="px-4 py-4">
+                      <div className="h-4 w-3/4 rounded bg-zinc-100" />
+                    </td>
+                  </tr>
+                ))
               ) : null}
 
               {!loading && jobs.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-5 py-16">
-                    <div className="flex flex-col items-center gap-3 text-center">
-                      <span className="rounded-full bg-zinc-100 p-3 text-zinc-400">
+                  <td colSpan={6} className="px-5 py-14 text-center">
+                    <div className="flex flex-col items-center gap-2.5">
+                      <span className="rounded-full bg-emerald-50 p-3 text-emerald-600">
                         <Inbox className="h-6 w-6" />
                       </span>
-                      <p className="text-sm font-medium text-zinc-700">No jobs yet</p>
-                      <p className="max-w-sm text-sm text-zinc-500">
-                        Import a CSV of job leads to see them scored and classified here.
+                      <p className="text-sm font-medium text-zinc-800">
+                        {activeCard === "pending"
+                          ? "All caught up — no pending vacancies require action!"
+                          : "No pending vacancies match this filter."}
                       </p>
-                      <Link
-                        href="/import"
-                        className="mt-1 rounded-lg border border-zinc-200 px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
-                      >
-                        Import your first CSV
-                      </Link>
+                      <p className="max-w-sm text-xs text-zinc-500">
+                        Add a new job using Quick Apply or Manual/CSV entry, or inspect completed
+                        history in All Vacancies.
+                      </p>
+                      <div className="mt-1 flex gap-2">
+                        <Link
+                          href="/import"
+                          className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700"
+                        >
+                          Add Vacancy
+                        </Link>
+                        <Link
+                          href="/sent"
+                          className="rounded-lg border border-zinc-200 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
+                        >
+                          View Sent Applications
+                        </Link>
+                      </div>
                     </div>
                   </td>
                 </tr>
               ) : null}
 
               {jobs.map((job) => {
-                const selectable = isSelectable(job);
+                const lifecycle = job.lifecycleStatus || "IMPORTED";
+                const canGenerate =
+                  job.applicationType === "email" &&
+                  [
+                    "CONTACT_AVAILABLE",
+                    "IMPORTED",
+                    "SEND_FAILED",
+                    "EMAIL_GENERATION_FAILED",
+                  ].includes(lifecycle);
+                const hasDraft = ["EMAIL_DRAFT_READY", "AWAITING_APPROVAL"].includes(lifecycle);
+
                 return (
                   <tr key={job._id} className="hover:bg-zinc-50/70">
                     <td className="px-4 py-3">
-                      <input
-                        type="checkbox"
-                        checked={selectedIds.includes(job._id)}
-                        onChange={() => toggleJob(job._id)}
-                        disabled={!selectable}
-                        aria-label={`Select ${job.companyName}`}
-                        className="h-4 w-4 rounded border-zinc-300 text-indigo-600 focus:ring-indigo-400 disabled:opacity-40"
-                      />
-                    </td>
-                    <td className="px-4 py-3">
                       <p className="font-medium text-zinc-900">{job.companyName}</p>
+                      <p className="text-xs text-zinc-600">{job.jobRole}</p>
                       {job.location ? (
-                        <p className="text-xs text-zinc-500">{job.location}</p>
+                        <p className="mt-0.5 text-[11px] text-zinc-400">{job.location}</p>
                       ) : null}
                     </td>
-                    <td className="px-4 py-3 text-zinc-700">{job.jobRole}</td>
+
                     <td className="px-4 py-3">
                       <div className="flex flex-col items-start gap-1">
-                        <MatchBadge score={job.matchScore} />
-                        {job.matchedSkills?.length ? (
-                          <div className="flex max-w-[12rem] flex-wrap gap-1">
-                            {job.matchedSkills.slice(0, 3).map((skill) => (
-                              <span
-                                key={skill}
-                                className="rounded bg-zinc-100 px-1.5 py-0.5 text-[11px] text-zinc-600"
-                              >
-                                {skill}
-                              </span>
-                            ))}
-                            {job.matchedSkills.length > 3 ? (
-                              <span className="text-[11px] text-zinc-400">
-                                +{job.matchedSkills.length - 3}
-                              </span>
-                            ) : null}
-                          </div>
-                        ) : null}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <TypeBadge type={job.applicationType} />
-                    </td>
-                    <td className="max-w-xs px-4 py-3">
-                      {job.hrEmail ? (
-                        <a
-                          href={`mailto:${job.hrEmail}`}
-                          className="break-all text-indigo-600 hover:underline"
-                        >
-                          {job.hrEmail}
-                        </a>
-                      ) : job.applyUrl ? (
-                        <a
-                          href={job.applyUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 break-all text-cyan-700 hover:underline"
-                        >
-                          Apply link
-                          <ExternalLink className="h-3.5 w-3.5 shrink-0" />
-                        </a>
-                      ) : (
-                        <span className="text-zinc-400">—</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      <StatusBadge status={job.status} />
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex flex-wrap items-center justify-end gap-2">
-                        {job.applicationType === "email" &&
-                        !["queued", "sent", "replied", "interview", "rejected"].includes(
-                          job.status,
-                        ) ? (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => onAutoApply(job)}
-                              disabled={
-                                applyingJobId === job._id ||
-                                generatingJobId === job._id ||
-                                bulkApplying ||
-                                bulkDrafting
-                              }
-                              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-2.5 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-300"
-                            >
-                              {applyingJobId === job._id ? (
-                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                              ) : (
-                                <Send className="h-3.5 w-3.5" />
-                              )}
-                              Auto-Apply
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => onGenerate(job)}
-                              disabled={
-                                generatingJobId === job._id ||
-                                applyingJobId === job._id ||
-                                bulkDrafting ||
-                                bulkApplying
-                              }
-                              className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-white px-2.5 py-1.5 text-xs font-medium text-indigo-700 shadow-sm transition-colors hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-60"
-                            >
-                              {generatingJobId === job._id ? (
-                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                              ) : (
-                                <Sparkles className="h-3.5 w-3.5" />
-                              )}
-                              {job.status === "draft_ready" ? "Regenerate" : "Draft"}
-                            </button>
-                          </>
-                        ) : null}
-
-                        {job.applicationType === "email" && job.status === "draft_ready" ? (
-                          <Link
-                            href="/applications"
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-2.5 py-1.5 text-xs font-medium text-violet-700 transition-colors hover:bg-violet-100"
-                          >
-                            <Mail className="h-3.5 w-3.5" />
-                            Review Draft
-                          </Link>
-                        ) : null}
-
-                        {job.applicationType === "portal" && job.applyUrl ? (
+                        <ContactStatusBadge status={job.contactStatus} />
+                        {job.hrEmail ? (
+                          <span className="text-xs text-zinc-700">{job.hrEmail}</span>
+                        ) : job.applyUrl ? (
                           <a
                             href={job.applyUrl}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 px-2.5 py-1.5 text-xs font-medium text-cyan-700 transition-colors hover:bg-cyan-50"
+                            className="inline-flex items-center gap-1 text-xs text-cyan-700 hover:underline"
                           >
-                            <ExternalLink className="h-3.5 w-3.5" />
-                            Open Portal
+                            Portal link <ExternalLink className="h-3 w-3" />
                           </a>
-                        ) : null}
+                        ) : (
+                          <span className="text-xs text-amber-700">HR Email Not Found</span>
+                        )}
+                      </div>
+                    </td>
 
-                        {job.applicationType === "portal" && job.status === "new" ? (
+                    <td className="px-4 py-3">
+                      <MatchBadge score={job.matchScore} />
+                    </td>
+
+                    <td className="px-4 py-3">
+                      <StatusBadge status={lifecycle} />
+                    </td>
+
+                    <td className="px-4 py-3 text-xs text-zinc-500">
+                      {formatDate(job.createdAt)}
+                    </td>
+
+                    <td className="px-4 py-3">
+                      <div className="flex flex-wrap items-center justify-end gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setDetailJob(job)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-zinc-200 px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
+                        >
+                          <Eye className="h-3.5 w-3.5" />
+                          View Details
+                        </button>
+
+                        {!job.hrEmail ? (
                           <button
                             type="button"
-                            onClick={() => markJobStatus(job._id, "sent")}
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 px-2.5 py-1.5 text-xs font-medium text-zinc-600 transition-colors hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-700"
+                            onClick={() => setDetailJob(job)}
+                            className="inline-flex items-center gap-1 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs font-medium text-amber-800 hover:bg-amber-100"
                           >
-                            <CheckCheck className="h-3.5 w-3.5" />
-                            Mark Applied
+                            <Search className="h-3.5 w-3.5" />
+                            Find HR Email
                           </button>
+                        ) : null}
+
+                        {canGenerate ? (
+                          <button
+                            type="button"
+                            onClick={() => handleGenerateEmail(job)}
+                            disabled={generatingJobId === job._id}
+                            className="inline-flex items-center gap-1 rounded-lg bg-indigo-600 px-2.5 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-indigo-700 disabled:opacity-60"
+                          >
+                            {generatingJobId === job._id ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <Sparkles className="h-3.5 w-3.5" />
+                            )}
+                            Generate Email
+                          </button>
+                        ) : null}
+
+                        {hasDraft ? (
+                          <>
+                            <Link
+                              href="/drafts"
+                              className="inline-flex items-center gap-1 rounded-lg border border-violet-200 bg-violet-50 px-2.5 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-100"
+                            >
+                              <FileEdit className="h-3.5 w-3.5" />
+                              Review Draft
+                            </Link>
+                            <button
+                              type="button"
+                              onClick={() => handleApproveAndQueue(job, false)}
+                              disabled={busyJobId === job._id}
+                              className="inline-flex items-center gap-1 rounded-lg bg-sky-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-sky-700 disabled:opacity-60"
+                            >
+                              <CheckCheck className="h-3.5 w-3.5" />
+                              Approve
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleApproveAndQueue(job, true)}
+                              disabled={busyJobId === job._id}
+                              className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-60"
+                            >
+                              <Send className="h-3.5 w-3.5" />
+                              Send
+                            </button>
+                          </>
+                        ) : null}
+
+                        {lifecycle === "APPROVED" || lifecycle === "QUEUED" ? (
+                          <Link
+                            href="/queue"
+                            className="inline-flex items-center gap-1 rounded-lg bg-amber-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-amber-700"
+                          >
+                            <Send className="h-3.5 w-3.5" />
+                            Send / Queue
+                          </Link>
+                        ) : null}
+
+                        {lifecycle === "PORTAL_APPLICATION_REQUIRED" && job.applyUrl ? (
+                          <a
+                            href={job.applyUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 rounded-lg border border-cyan-200 bg-cyan-50 px-2.5 py-1.5 text-xs font-medium text-cyan-800 hover:bg-cyan-100"
+                          >
+                            <ExternalLink className="h-3.5 w-3.5" />
+                            Apply Portal
+                          </a>
                         ) : null}
 
                         <button
                           type="button"
-                          onClick={() => deleteJob(job._id)}
-                          className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 px-2.5 py-1.5 text-xs font-medium text-zinc-600 transition-colors hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600"
+                          onClick={() => handleArchive(job)}
+                          title="Archive vacancy"
+                          className="rounded-lg border border-zinc-200 p-1.5 text-zinc-400 hover:bg-zinc-50 hover:text-zinc-700"
                         >
-                          <Trash2 className="h-3.5 w-3.5" />
-                          Delete
+                          <Archive className="h-3.5 w-3.5" />
                         </button>
                       </div>
                     </td>
@@ -738,299 +553,46 @@ export default function JobsDashboard() {
             </tbody>
           </table>
         </div>
+
+        {total > 15 ? (
+          <footer className="flex items-center justify-between border-t border-zinc-200 bg-zinc-50 px-4 py-2.5 text-xs text-zinc-600">
+            <span>
+              Showing {jobs.length} of {total} pending · Page {page} of {totalPages}
+            </span>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                disabled={page <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                className="inline-flex items-center gap-1 rounded border border-zinc-200 bg-white px-2.5 py-1 hover:bg-zinc-50 disabled:opacity-40"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" /> Prev
+              </button>
+              <button
+                type="button"
+                disabled={page >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                className="inline-flex items-center gap-1 rounded border border-zinc-200 bg-white px-2.5 py-1 hover:bg-zinc-50 disabled:opacity-40"
+              >
+                Next <ChevronRight className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </footer>
+        ) : null}
       </section>
 
-      {/* + Add Job Modal */}
-      {addJobOpen && (
-        <div className="fixed inset-0 z-50">
-          <div
-            className="absolute inset-0 bg-zinc-900/40"
-            onClick={closeAddJob}
-            role="presentation"
-          />
-          <div className="absolute inset-0 flex items-center justify-center p-4">
-            <div className="w-full max-w-lg rounded-xl border border-zinc-200 bg-white shadow-xl">
-              <div className="flex items-center justify-between border-b border-zinc-200 px-5 py-4">
-                <h2 className="text-lg font-semibold text-zinc-900">Add a Job</h2>
-                <button
-                  type="button"
-                  onClick={closeAddJob}
-                  className="rounded-lg border border-zinc-200 p-1.5 text-zinc-500 hover:bg-zinc-50"
-                  aria-label="Close"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-              <div className="flex flex-col gap-4 px-5 py-5">
-                {notice && !addJobOpen && (
-                  <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
-                    {notice}
-                  </p>
-                )
-                  ? null
-                  : notice
-                    ? (
-                      <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
-                        {notice}
-                      </p>
-                    )
-                    : null}
-
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <label className="flex flex-col gap-1.5">
-                    <span className="text-xs font-medium text-zinc-600">Company name *</span>
-                    <input
-                      type="text"
-                      value={newJob.companyName}
-                      onChange={(e) =>
-                        setNewJob((prev) => ({ ...prev, companyName: e.target.value }))
-                      }
-                      placeholder="Acme Corp"
-                      className={inputClass}
-                    />
-                  </label>
-                  <label className="flex flex-col gap-1.5">
-                    <span className="text-xs font-medium text-zinc-600">Job role *</span>
-                    <input
-                      type="text"
-                      value={newJob.jobRole}
-                      onChange={(e) =>
-                        setNewJob((prev) => ({ ...prev, jobRole: e.target.value }))
-                      }
-                      placeholder="Frontend Engineer"
-                      className={inputClass}
-                    />
-                  </label>
-                </div>
-
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <label className="flex flex-col gap-1.5">
-                    <span className="text-xs font-medium text-zinc-600">HR email</span>
-                    <input
-                      type="email"
-                      value={newJob.hrEmail}
-                      onChange={(e) =>
-                        setNewJob((prev) => ({ ...prev, hrEmail: e.target.value }))
-                      }
-                      placeholder="hr@acme.com"
-                      className={`${inputClass} text-zinc-800`}
-                    />
-                  </label>
-                  <label className="flex flex-col gap-1.5">
-                    <span className="text-xs font-medium text-zinc-600">Apply URL</span>
-                    <input
-                      type="url"
-                      value={newJob.applyUrl}
-                      onChange={(e) =>
-                        setNewJob((prev) => ({ ...prev, applyUrl: e.target.value }))
-                      }
-                      placeholder="https://careers.acme.com/apply"
-                      className={inputClass}
-                    />
-                  </label>
-                </div>
-
-                <label className="flex flex-col gap-1.5">
-                  <span className="text-xs font-medium text-zinc-600">Job description</span>
-                  <textarea
-                    value={newJob.jobDescription}
-                    onChange={(e) =>
-                      setNewJob((prev) => ({ ...prev, jobDescription: e.target.value }))
-                    }
-                    placeholder="We are looking for a React developer…"
-                    rows={3}
-                    className={inputClass}
-                  />
-                </label>
-
-                <div className="grid gap-4 sm:grid-cols-3">
-                  <label className="flex flex-col gap-1.5">
-                    <span className="text-xs font-medium text-zinc-600">Location</span>
-                    <input
-                      type="text"
-                      value={newJob.location}
-                      onChange={(e) =>
-                        setNewJob((prev) => ({ ...prev, location: e.target.value }))
-                      }
-                      placeholder="Remote"
-                      className={inputClass}
-                    />
-                  </label>
-                  <label className="flex flex-col gap-1.5">
-                    <span className="text-xs font-medium text-zinc-600">Company website</span>
-                    <input
-                      type="url"
-                      value={newJob.companyWebsite}
-                      onChange={(e) =>
-                        setNewJob((prev) => ({ ...prev, companyWebsite: e.target.value }))
-                      }
-                      placeholder="https://acme.com"
-                      className={inputClass}
-                    />
-                  </label>
-                  <label className="flex flex-col gap-1.5">
-                    <span className="text-xs font-medium text-zinc-600">Salary</span>
-                    <input
-                      type="text"
-                      value={newJob.salary}
-                      onChange={(e) =>
-                        setNewJob((prev) => ({ ...prev, salary: e.target.value }))
-                      }
-                      placeholder="$120k–150k"
-                      className={inputClass}
-                    />
-                  </label>
-                </div>
-
-                <div className="flex items-center justify-end gap-3 border-t border-zinc-200 pt-4">
-                  <button
-                    type="button"
-                    onClick={closeAddJob}
-                    disabled={addingJob}
-                    className="rounded-lg border border-zinc-200 px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleAddJob}
-                    disabled={addingJob || !newJob.companyName || !newJob.jobRole}
-                    className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-300"
-                  >
-                    {addingJob ? (
-                      <>
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        Adding…
-                      </>
-                    ) : (
-                      <>
-                        <Send className="h-4 w-4" />
-                        Add Job
-                      </>
-                    )
-                  }
-                </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Schedule Interview Modal */}
-      {interviewOpen && schedulingJob && (
-        <div className="fixed inset-0 z-50">
-          <div
-            className="absolute inset-0 bg-zinc-900/40"
-            onClick={closeScheduleInterview}
-            role="presentation"
-          />
-          <div className="absolute inset-0 flex items-center justify-center p-4">
-            <div className="w-full max-w-lg rounded-xl border border-zinc-200 bg-white shadow-xl">
-              <div className="flex items-center justify-between border-b border-zinc-200 px-5 py-4">
-                <div>
-                  <h2 className="text-lg font-semibold text-zinc-900">Schedule Interview</h2>
-                  <p className="text-sm text-zinc-500">
-                    {schedulingJob.companyName} · {schedulingJob.jobRole}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={closeScheduleInterview}
-                  className="rounded-lg border border-zinc-200 p-1.5 text-zinc-500 hover:bg-zinc-50"
-                  aria-label="Close"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-              <div className="flex flex-col gap-4 px-5 py-5">
-                <div className="grid gap-4">
-                  <label className="flex flex-col gap-1.5">
-                    <span className="text-xs font-medium text-zinc-600">Interview date *</span>
-                    <input
-                      type="datetime-local"
-                      value={interviewForm.date}
-                      onChange={(e) =>
-                        setInterviewForm((prev) => ({ ...prev, date: e.target.value }))
-                      }
-                      className={inputClass}
-                    />
-                  </label>
-
-                  <label className="flex flex-col gap-1.5">
-                    <span className="text-xs font-medium text-zinc-600">Meeting URL</span>
-                    <input
-                      type="url"
-                      value={interviewForm.meetingUrl}
-                      onChange={(e) =>
-                        setInterviewForm((prev) => ({ ...prev, meetingUrl: e.target.value }))
-                      }
-                      placeholder="https://meet.google.com/abc-defg-hij"
-                      className={inputClass}
-                    />
-                  </label>
-
-                  <label className="flex flex-col gap-1.5">
-                    <span className="text-xs font-medium text-zinc-600">Round</span>
-                    <input
-                      type="text"
-                      value={interviewForm.round}
-                      onChange={(e) =>
-                        setInterviewForm((prev) => ({ ...prev, round: e.target.value }))
-                      }
-                      placeholder="Technical, Phone Screen, On-site…"
-                      className={inputClass}
-                    />
-                  </label>
-
-                  <label className="flex flex-col gap-1.5">
-                    <span className="text-xs font-medium text-zinc-600">Notes</span>
-                    <textarea
-                      value={interviewForm.notes}
-                      onChange={(e) =>
-                        setInterviewForm((prev) => ({ ...prev, notes: e.target.value }))
-                      }
-                      placeholder="React deep dive, system design…"
-                      rows={3}
-                      className={inputClass}
-                    />
-                  </label>
-                </div>
-
-                <div className="flex items-center justify-end gap-3 border-t border-zinc-200 pt-4">
-                  <button
-                    type="button"
-                    onClick={closeScheduleInterview}
-                    disabled={schedulingInterview}
-                    className="rounded-lg border border-zinc-200 px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleScheduleInterview}
-                    disabled={schedulingInterview || !interviewForm.date}
-                    className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-300"
-                  >
-                    {schedulingInterview ? (
-                      <>
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        Saving…
-                      </>
-                    ) : (
-                      <>
-                        <Video className="h-4 w-4" />
-                        Save Interview
-                      </>
-                    )
-                  }
-                </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <VacancyDetailModal
+        key={detailJob?._id || "closed"}
+        job={detailJob}
+        onClose={() => setDetailJob(null)}
+        onSave={async (id, patch) => {
+          const updated = await updateJobDetails(id, patch);
+          setDetailJob(updated);
+          reload();
+        }}
+        onGenerateDraft={handleGenerateEmail}
+        onArchive={handleArchive}
+      />
     </div>
   );
 }

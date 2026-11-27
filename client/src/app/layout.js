@@ -1,7 +1,7 @@
 import { Geist, Geist_Mono } from "next/font/google";
-import Sidebar from "@/components/Sidebar";
-import MobileNav from "@/components/MobileNav";
+import AuthGate from "@/components/AuthGate";
 import PwaRegister from "@/components/PwaRegister";
+import { ToastProvider } from "@/components/ToastProvider";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -24,11 +24,11 @@ export const viewport = {
 
 export const metadata = {
   title: {
-    default: "ApplyFlow | Auto-Apply Job Manager",
+    default: "ApplyFlow | Personal Job Application Automation",
     template: "%s | ApplyFlow",
   },
   description:
-    "Automate job applications with grounded AI email drafting, resume management, and application tracking.",
+    "Single-user job application automation with grounded AI email drafting, resume profiles, and controlled queue delivery.",
   applicationName: "ApplyFlow",
   manifest: "/manifest.json",
   appleWebApp: {
@@ -62,13 +62,9 @@ export default function RootLayout({ children }) {
     >
       <body className="min-h-full bg-zinc-50 font-sans text-zinc-900">
         <PwaRegister />
-        <MobileNav />
-        <Sidebar />
-        <div className="md:pl-64">
-          <main className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
-            {children}
-          </main>
-        </div>
+        <ToastProvider>
+          <AuthGate>{children}</AuthGate>
+        </ToastProvider>
       </body>
     </html>
   );

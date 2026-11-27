@@ -14,16 +14,18 @@ import { sendApplicationEmail } from "../services/mailSender.js";
 import { ensureResumeOnDisk, getResumeBuffer } from "../utils/resumeFile.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const EDITABLE_STATUSES = ["draft", "failed"];
+const EDITABLE_STATUSES = ["draft", "approved", "failed"];
+const QUEUEABLE_STATUSES = ["draft", "approved", "failed"];
 // A job is spoken for while its application is queued or already sent.
 const BLOCKING_STATUSES = ["queued", "sent"];
-const DEFAULT_DAILY_LIMIT = 30;
+const DEFAULT_DAILY_LIMIT = 20;
 const FOLLOW_UP_WINDOW_DAYS = 5;
 
 const isObjectId = (value) => mongoose.isValidObjectId(value);
 
-const resolveDailyLimit = async () => {
-  const profile = await Profile.findOne().lean();
+const resolveDailyLimit = async (userId) => {
+  const filter = userId ? { userId } : {};
+  const profile = await Profile.findOne(filter).lean();
   const fromProfile = Number(profile?.dailyEmailLimit);
   if (Number.isFinite(fromProfile) && fromProfile > 0) return Math.floor(fromProfile);
 
@@ -35,12 +37,13 @@ const resolveDailyLimit = async () => {
 
 // sentToday counts only sends from the last 24 hours, and queued applications
 // are subtracted from the headroom so approving twice cannot overshoot.
-export const getQuota = async () => {
+export const getQuota = async (userId) => {
+  const ownerFilter = userId ? { userId } : {};
   const since = new Date(Date.now() - DAY_MS);
   const [sentToday, queued, dailyLimit] = await Promise.all([
-    Application.countDocuments({ status: "sent", sentAt: { $gte: since } }),
-    Application.countDocuments({ status: "queued" }),
-    resolveDailyLimit(),
+    Application.countDocuments({ ...ownerFilter, status: "sent", sentAt: { $gte: since } }),
+    Application.countDocuments({ ...ownerFilter, status: "queued" }),
+    resolveDailyLimit(userId),
   ]);
 
   return {
@@ -55,17 +58,18 @@ const castError = (error) =>
   error.name === "CastError" ? { error: "Invalid id" } : null;
 
 // The resume attached to a send: an explicit choice, the default, or the newest.
-export const resolveResume = async (resumeId) => {
+export const resolveResume = async (resumeId, userId) => {
+  const ownerFilter = userId ? { userId } : {};
   if (resumeId) {
     if (!isObjectId(resumeId)) return { error: "Invalid resume id", status: 400 };
-    const resume = await Resume.findById(resumeId);
+    const resume = await Resume.findOne({ _id: resumeId, ...ownerFilter });
     if (!resume) return { error: "Resume not found", status: 400 };
     return { resume };
   }
 
   const resume =
-    (await Resume.findOne({ isDefault: true })) ||
-    (await Resume.findOne().sort({ uploadedAt: -1 }));
+    (await Resume.findOne({ ...ownerFilter, isDefault: true })) ||
+    (await Resume.findOne(ownerFilter).sort({ uploadedAt: -1 }));
   if (!resume) {
     return { error: "Upload a resume before generating an application", status: 400 };
   }
@@ -74,7 +78,7 @@ export const resolveResume = async (resumeId) => {
 
 // Generates copy for one vacancy and reuses any editable draft so repeated
 // generations do not stack applications on the same job.
-export const createDraftForJob = async ({ job, profile, resume, tone, customNote }) => {
+export const createDraftForJob = async ({ userId, job, profile, resume, tone, customNote }) => {
   const { subject, body, providerUsed } = await generateApplicationEmail({
     job,
     profile,
@@ -83,7 +87,9 @@ export const createDraftForJob = async ({ job, profile, resume, tone, customNote
     customNote,
   });
 
+  const ownerId = userId || job.userId;
   let application = await Application.findOne({
+    ...(ownerId ? { userId: ownerId } : {}),
     jobId: job._id,
     status: { $in: EDITABLE_STATUSES },
     isFollowUp: { $ne: true },
@@ -92,22 +98,26 @@ export const createDraftForJob = async ({ job, profile, resume, tone, customNote
 
   if (application) {
     Object.assign(application, {
+      userId: ownerId,
       subject,
       body,
       resumeId: resume._id,
       recipientEmail: job.hrEmail,
       status: "draft",
+      deliveryStatus: "NOT_SENT",
       errorLog: "",
       providerUsed,
     });
   } else {
     application = new Application({
+      userId: ownerId,
       jobId: job._id,
       resumeId: resume._id,
       subject,
       body,
       recipientEmail: job.hrEmail,
       status: "draft",
+      deliveryStatus: "NOT_SENT",
       providerUsed,
     });
   }
@@ -115,6 +125,8 @@ export const createDraftForJob = async ({ job, profile, resume, tone, customNote
   await application.save();
 
   job.status = "draft_ready";
+  job.lifecycleStatus = "EMAIL_DRAFT_READY";
+  job.resumeIdUsed = resume._id;
   await job.save();
 
   return { application, existed };
@@ -123,21 +135,23 @@ export const createDraftForJob = async ({ job, profile, resume, tone, customNote
 // GET /api/applications?status=draft
 export const listApplications = async (req, res) => {
   try {
+    const userId = req.user._id;
     const { status } = req.query;
-    const query = {};
+    const query = { userId };
 
     // "followup" is a derived view: sent, past its follow-up date, job still sent.
     if (status === "followup") {
       const [applications, quota] = await Promise.all([
         Application.find({
+          userId,
           status: "sent",
           followUpDate: { $lte: new Date() },
         })
           .populate("jobId")
-          .populate("resumeId")
+          .populate("resumeId", "-fileData")
           .sort({ followUpDate: 1 })
           .lean(),
-        getQuota(),
+        getQuota(userId),
       ]);
 
       const due = applications.filter(
@@ -147,7 +161,9 @@ export const listApplications = async (req, res) => {
       return res.json({ applications: due, quota });
     }
 
-    if (status && status !== "all") {
+    if (status === "queue_view") {
+      query.status = { $in: ["approved", "queued"] };
+    } else if (status && status !== "all") {
       if (!APPLICATION_STATUSES.includes(status)) {
         return res
           .status(400)
@@ -159,10 +175,10 @@ export const listApplications = async (req, res) => {
     const [applications, quota] = await Promise.all([
       Application.find(query)
         .populate("jobId")
-        .populate("resumeId")
+        .populate("resumeId", "-fileData")
         .sort({ createdAt: -1 })
         .lean(),
-      getQuota(),
+      getQuota(userId),
     ]);
 
     return res.json({ applications, quota });
@@ -174,11 +190,12 @@ export const listApplications = async (req, res) => {
 // POST /api/applications/generate/:jobId
 export const generateDraft = async (req, res) => {
   try {
+    const userId = req.user._id;
     if (!isObjectId(req.params.jobId)) {
       return res.status(400).json({ error: "Invalid job id" });
     }
 
-    const job = await Job.findById(req.params.jobId);
+    const job = await Job.findOne({ _id: req.params.jobId, userId });
     if (!job) return res.status(404).json({ error: "Job not found" });
 
     if (job.applicationType !== "email") {
@@ -192,10 +209,11 @@ export const generateDraft = async (req, res) => {
     }
 
     const { resumeId, tone, customNote } = req.body || {};
-    const resolved = await resolveResume(resumeId);
+    const resolved = await resolveResume(resumeId, userId);
     if (resolved.error) return res.status(resolved.status).json({ error: resolved.error });
 
     const active = await Application.findOne({
+      userId,
       jobId: job._id,
       status: { $in: BLOCKING_STATUSES },
       isFollowUp: { $ne: true },
@@ -206,8 +224,9 @@ export const generateDraft = async (req, res) => {
         .json({ error: `An application for this job is already ${active.status}` });
     }
 
-    const profile = (await Profile.findOne()) || {};
+    const profile = (await Profile.findOne({ userId })) || {};
     const { application, existed } = await createDraftForJob({
+      userId,
       job,
       profile,
       resume: resolved.resume,
@@ -215,7 +234,8 @@ export const generateDraft = async (req, res) => {
       customNote,
     });
 
-    return res.status(existed ? 200 : 201).json(application);
+    const populated = await application.populate(["jobId", { path: "resumeId", select: "-fileData" }]);
+    return res.status(existed ? 200 : 201).json(populated);
   } catch (error) {
     const cast = castError(error);
     if (cast) return res.status(400).json(cast);
@@ -226,6 +246,7 @@ export const generateDraft = async (req, res) => {
 // POST /api/applications/generate-batch
 export const generateBatch = async (req, res) => {
   try {
+    const userId = req.user._id;
     const { jobIds, allNew = false, resumeId, tone, customNote } = req.body || {};
     const ids = Array.isArray(jobIds) ? jobIds.map(String).filter(Boolean) : [];
 
@@ -236,14 +257,14 @@ export const generateBatch = async (req, res) => {
       return res.status(400).json({ error: "Every jobId must be a valid id" });
     }
 
-    const resolved = await resolveResume(resumeId);
+    const resolved = await resolveResume(resumeId, userId);
     if (resolved.error) return res.status(resolved.status).json({ error: resolved.error });
 
-    const profile = (await Profile.findOne()) || {};
+    const profile = (await Profile.findOne({ userId })) || {};
 
     const jobs = ids.length
-      ? await Job.find({ _id: { $in: ids } })
-      : await Job.find({ applicationType: "email", status: "new" }).sort({ createdAt: -1 });
+      ? await Job.find({ userId, _id: { $in: ids } })
+      : await Job.find({ userId, applicationType: "email", status: "new" }).sort({ createdAt: -1 });
 
     const byId = new Map(jobs.map((job) => [String(job._id), job]));
     const order = ids.length ? ids : jobs.map((job) => String(job._id));
@@ -287,6 +308,7 @@ export const generateBatch = async (req, res) => {
 
       try {
         const { application } = await createDraftForJob({
+          userId,
           job,
           profile,
           resume: resolved.resume,
@@ -324,7 +346,8 @@ export const generateBatch = async (req, res) => {
 // PATCH /api/applications/:id
 export const updateApplication = async (req, res) => {
   try {
-    const application = await Application.findById(req.params.id);
+    const userId = req.user._id;
+    const application = await Application.findOne({ _id: req.params.id, userId });
     if (!application) return res.status(404).json({ error: "Application not found" });
 
     if (!EDITABLE_STATUSES.includes(application.status)) {
@@ -349,7 +372,7 @@ export const updateApplication = async (req, res) => {
 
     if (resumeId !== undefined) {
       if (!isObjectId(resumeId)) return res.status(400).json({ error: "Invalid resume id" });
-      const resume = await Resume.findById(resumeId);
+      const resume = await Resume.findOne({ _id: resumeId, userId });
       if (!resume) return res.status(400).json({ error: "Resume not found" });
       application.resumeId = resume._id;
     }
@@ -368,7 +391,10 @@ export const updateApplication = async (req, res) => {
 
     await application.save();
 
-    const populated = await application.populate(["jobId", "resumeId"]);
+    const populated = await application.populate([
+      "jobId",
+      { path: "resumeId", select: "-fileData" },
+    ]);
     return res.json(populated);
   } catch (error) {
     const cast = castError(error);
@@ -379,10 +405,10 @@ export const updateApplication = async (req, res) => {
 
 // Shared by single and batch approval so both enforce the same safeguards.
 export const queueApplication = async (application) => {
-  if (!EDITABLE_STATUSES.includes(application.status)) {
+  if (!QUEUEABLE_STATUSES.includes(application.status)) {
     return {
       status: 400,
-      error: `Only draft or failed applications can be queued (this one is ${application.status})`,
+      error: `Only draft, approved, or failed applications can be queued (this one is ${application.status})`,
     };
   }
 
@@ -401,11 +427,12 @@ export const queueApplication = async (application) => {
     return { status: 400, error: "This application has no recipient email" };
   }
 
-  const quota = await getQuota();
+  const ownerId = application.userId || job.userId;
+  const quota = await getQuota(ownerId);
   if (quota.sentToday + quota.queued >= quota.dailyLimit) {
     return {
       status: 429,
-      error: `Daily limit reached: ${quota.sentToday} sent and ${quota.queued} queued in the last 24 hours against a limit of ${quota.dailyLimit}. Raise the limit on your profile or try again later.`,
+      error: `Daily limit reached: ${quota.sentToday} sent and ${quota.queued} queued in the last 24 hours against a limit of ${quota.dailyLimit}. Raise the limit on Email Settings or try again later.`,
     };
   }
 
@@ -421,6 +448,7 @@ export const queueApplication = async (application) => {
 
   if (!application.isFollowUp) {
     const duplicate = await Application.findOne({
+      ...(ownerId ? { userId: ownerId } : {}),
       _id: { $ne: application._id },
       jobId: job._id,
       recipientEmail: to,
@@ -446,12 +474,15 @@ export const queueApplication = async (application) => {
   });
 
   application.status = "queued";
+  application.deliveryStatus = "QUEUED";
+  application.approvedAt = application.approvedAt || new Date();
   application.errorLog = "";
   await application.save();
 
   // A follow-up does not change where the original application stands.
   if (!application.isFollowUp) {
     job.status = "queued";
+    job.lifecycleStatus = "QUEUED";
     await job.save();
   }
 
@@ -475,11 +506,12 @@ export const sendApplicationNow = async (application) => {
     return { status: 400, error: "This application has no recipient email" };
   }
 
-  const quota = await getQuota();
+  const ownerId = application.userId || job.userId;
+  const quota = await getQuota(ownerId);
   if (quota.sentToday >= quota.dailyLimit) {
     return {
       status: 429,
-      error: `Daily limit reached: ${quota.sentToday} sent in the last 24 hours against a limit of ${quota.dailyLimit}. Raise the limit on your profile or try again later.`,
+      error: `Daily limit reached: ${quota.sentToday} sent in the last 24 hours against a limit of ${quota.dailyLimit}. Raise the limit on Email Settings or try again later.`,
     };
   }
 
@@ -505,6 +537,8 @@ export const sendApplicationNow = async (application) => {
 
     const sentAt = new Date();
     application.status = "sent";
+    application.deliveryStatus = "ACCEPTED_BY_GMAIL";
+    application.approvedAt = application.approvedAt || sentAt;
     application.messageId = messageId;
     application.sentAt = sentAt;
     application.errorLog = "";
@@ -515,6 +549,7 @@ export const sendApplicationNow = async (application) => {
 
     if (!application.isFollowUp) {
       job.status = "sent";
+      job.lifecycleStatus = "SENT";
       await job.save();
     }
 
@@ -522,25 +557,110 @@ export const sendApplicationNow = async (application) => {
   } catch (err) {
     console.error(`[sendApplicationNow] Failed to send email to ${to}: ${err.message}`);
     application.status = "failed";
+    application.deliveryStatus = "FAILED";
     application.errorLog = err.message;
     await application.save();
     if (!application.isFollowUp) {
       job.status = "failed";
+      job.lifecycleStatus = "SEND_FAILED";
       await job.save();
     }
     return { status: 500, error: `Failed to send email: ${err.message}` };
   }
 };
 
+// POST /api/applications/:id/approve — explicitly marks draft as approved without auto-queuing
+export const approveOnly = async (req, res) => {
+  try {
+    const application = await Application.findOne({
+      _id: req.params.id,
+      userId: req.user._id,
+    })
+      .populate("jobId")
+      .populate("resumeId", "-fileData");
+
+    if (!application) return res.status(404).json({ error: "Application not found" });
+    if (!EDITABLE_STATUSES.includes(application.status)) {
+      return res.status(400).json({
+        error: `Only draft or failed applications can be approved (currently ${application.status})`,
+      });
+    }
+
+    application.status = "approved";
+    application.approvedAt = new Date();
+    application.errorLog = "";
+    await application.save();
+
+    if (application.jobId && !application.isFollowUp) {
+      application.jobId.status = "approved";
+      application.jobId.lifecycleStatus = "APPROVED";
+      await application.jobId.save();
+    }
+
+    return res.json({ message: "Application approved", application: application.toObject() });
+  } catch (error) {
+    const cast = castError(error);
+    if (cast) return res.status(400).json(cast);
+    return res.status(500).json({ error: error.message });
+  }
+};
+
+// POST /api/applications/approve-only-batch
+export const approveOnlyBatch = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const { applicationIds } = req.body || {};
+    if (!Array.isArray(applicationIds) || !applicationIds.length) {
+      return res.status(400).json({ error: "applicationIds must be a non-empty array" });
+    }
+    if (applicationIds.some((id) => !isObjectId(id))) {
+      return res.status(400).json({ error: "Every applicationId must be a valid id" });
+    }
+
+    let approved = 0;
+    let skipped = 0;
+    for (const id of applicationIds) {
+      const app = await Application.findOne({ _id: id, userId }).populate("jobId");
+      if (!app || !EDITABLE_STATUSES.includes(app.status)) {
+        skipped += 1;
+        continue;
+      }
+      app.status = "approved";
+      app.approvedAt = new Date();
+      app.errorLog = "";
+      await app.save();
+      if (app.jobId && !app.isFollowUp) {
+        app.jobId.status = "approved";
+        app.jobId.lifecycleStatus = "APPROVED";
+        await app.jobId.save();
+      }
+      approved += 1;
+    }
+
+    return res.json({ approved, skipped });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+};
+
 // POST /api/applications/:id/send-now
 export const sendNow = async (req, res) => {
   try {
-    const application = await Application.findById(req.params.id)
+    const application = await Application.findOne({
+      _id: req.params.id,
+      userId: req.user._id,
+    })
       .populate("jobId")
       .populate("resumeId");
 
     if (!application) return res.status(404).json({ error: "Application not found" });
 
+    // Sending from UI requires explicit review or approved/queued status
+    if (!["draft", "approved", "queued", "failed"].includes(application.status)) {
+      return res.status(400).json({ error: `Cannot send application with status ${application.status}` });
+    }
+
+    application.approvedAt = application.approvedAt || new Date();
     const outcome = await sendApplicationNow(application);
     if (outcome.error) return res.status(outcome.status || 500).json({ error: outcome.error });
 
@@ -557,15 +677,19 @@ export const sendNow = async (req, res) => {
 };
 
 // POST /api/applications/process-queue
-export const processQueue = async (_req, res) => {
+export const processQueue = async (req, res) => {
   try {
-    const queuedApps = await Application.find({ status: "queued" })
+    const userId = req.user._id;
+    const queuedApps = await Application.find({
+      userId,
+      status: { $in: ["queued", "approved"] },
+    })
       .populate("jobId")
       .populate("resumeId")
       .sort({ createdAt: 1 });
 
     if (!queuedApps.length) {
-      return res.json({ message: "No applications in queue", processed: 0, sent: 0, failed: 0 });
+      return res.json({ message: "No approved or queued applications found", processed: 0, sent: 0, failed: 0 });
     }
 
     let sent = 0;
@@ -584,7 +708,7 @@ export const processQueue = async (_req, res) => {
     }
 
     return res.json({
-      message: `Processed ${queuedApps.length} queued application(s): ${sent} sent, ${failed} failed`,
+      message: `Processed ${queuedApps.length} application(s): ${sent} sent, ${failed} failed`,
       processed: queuedApps.length,
       sent,
       failed,
@@ -598,11 +722,19 @@ export const processQueue = async (_req, res) => {
 // POST /api/applications/auto-apply/:jobId
 export const autoApply = async (req, res) => {
   try {
+    const userId = req.user._id;
     if (!isObjectId(req.params.jobId)) {
       return res.status(400).json({ error: "Invalid job id" });
     }
 
-    const job = await Job.findById(req.params.jobId);
+    const profile = (await Profile.findOne({ userId })) || {};
+    if (!profile.autoSendEnabled) {
+      return res.status(403).json({
+        error: "Automatic sending mode is disabled by default. Review drafts first, or enable Automatic Sending in Email Settings.",
+      });
+    }
+
+    const job = await Job.findOne({ _id: req.params.jobId, userId });
     if (!job) return res.status(404).json({ error: "Job not found" });
 
     if (job.applicationType !== "email") {
@@ -616,11 +748,11 @@ export const autoApply = async (req, res) => {
     }
 
     const { resumeId, tone, customNote } = req.body || {};
-    const resolved = await resolveResume(resumeId);
+    const resolved = await resolveResume(resumeId, userId);
     if (resolved.error) return res.status(resolved.status).json({ error: resolved.error });
 
-    const profile = (await Profile.findOne()) || {};
     const { application } = await createDraftForJob({
+      userId,
       job,
       profile,
       resume: resolved.resume,
@@ -629,6 +761,7 @@ export const autoApply = async (req, res) => {
     });
 
     await application.populate(["jobId", "resumeId"]);
+    application.approvedAt = new Date();
 
     const outcome = await sendApplicationNow(application);
     if (outcome.error) {
@@ -653,6 +786,7 @@ export const autoApply = async (req, res) => {
 // POST /api/applications/auto-apply-batch
 export const autoApplyBatch = async (req, res) => {
   try {
+    const userId = req.user._id;
     const { jobIds, resumeId, tone, customNote } = req.body || {};
     const ids = Array.isArray(jobIds) ? jobIds.map(String).filter(Boolean) : [];
 
@@ -660,10 +794,16 @@ export const autoApplyBatch = async (req, res) => {
       return res.status(400).json({ error: "Provide an array of jobIds" });
     }
 
-    const resolved = await resolveResume(resumeId);
+    const profile = (await Profile.findOne({ userId })) || {};
+    if (!profile.autoSendEnabled) {
+      return res.status(403).json({
+        error: "Automatic sending mode is disabled by default. Review drafts first, or enable Automatic Sending in Email Settings.",
+      });
+    }
+
+    const resolved = await resolveResume(resumeId, userId);
     if (resolved.error) return res.status(resolved.status).json({ error: resolved.error });
 
-    const profile = (await Profile.findOne()) || {};
     let queued = 0;
     let failed = 0;
     let skipped = 0;
@@ -677,7 +817,7 @@ export const autoApplyBatch = async (req, res) => {
         continue;
       }
 
-      const quota = await getQuota();
+      const quota = await getQuota(userId);
       if (quota.sentToday + quota.queued >= quota.dailyLimit) {
         stoppedByQuota = true;
         skipped += 1;
@@ -685,7 +825,7 @@ export const autoApplyBatch = async (req, res) => {
         continue;
       }
 
-      const job = await Job.findById(jobId);
+      const job = await Job.findOne({ _id: jobId, userId });
       if (!job) {
         skipped += 1;
         results.push({ jobId, status: "skipped", reason: "Job not found" });
@@ -712,6 +852,7 @@ export const autoApplyBatch = async (req, res) => {
 
       try {
         const { application } = await createDraftForJob({
+          userId,
           job,
           profile,
           resume: resolved.resume,
@@ -721,6 +862,7 @@ export const autoApplyBatch = async (req, res) => {
 
         application.jobId = job;
         application.resumeId = resolved.resume;
+        application.approvedAt = new Date();
         const outcome = await queueApplication(application);
 
         if (outcome.ok) {
@@ -747,7 +889,7 @@ export const autoApplyBatch = async (req, res) => {
       }
     }
 
-    const finalQuota = await getQuota();
+    const finalQuota = await getQuota(userId);
     return res.json({
       queued,
       skipped,
@@ -764,7 +906,10 @@ export const autoApplyBatch = async (req, res) => {
 // POST /api/applications/:id/approve-and-queue
 export const approveAndQueue = async (req, res) => {
   try {
-    const application = await Application.findById(req.params.id)
+    const application = await Application.findOne({
+      _id: req.params.id,
+      userId: req.user._id,
+    })
       .populate("jobId")
       .populate("resumeId");
 
@@ -788,6 +933,7 @@ export const approveAndQueue = async (req, res) => {
 // POST /api/applications/approve-batch
 export const approveBatch = async (req, res) => {
   try {
+    const userId = req.user._id;
     const { applicationIds } = req.body || {};
     if (!Array.isArray(applicationIds) || !applicationIds.length) {
       return res.status(400).json({ error: "applicationIds must be a non-empty array" });
@@ -807,7 +953,7 @@ export const approveBatch = async (req, res) => {
         continue;
       }
 
-      const application = await Application.findById(id)
+      const application = await Application.findOne({ _id: id, userId })
         .populate("jobId")
         .populate("resumeId");
 
@@ -830,7 +976,7 @@ export const approveBatch = async (req, res) => {
       results.push({ applicationId: id, status: "queued", error: null });
     }
 
-    const quota = await getQuota();
+    const quota = await getQuota(userId);
 
     return res.json({
       queued,
@@ -849,11 +995,12 @@ export const approveBatch = async (req, res) => {
 // POST /api/applications/:id/generate-followup
 export const generateFollowUp = async (req, res) => {
   try {
+    const userId = req.user._id;
     if (!isObjectId(req.params.id)) {
       return res.status(400).json({ error: "Invalid application id" });
     }
 
-    const application = await Application.findById(req.params.id).populate("jobId");
+    const application = await Application.findOne({ _id: req.params.id, userId }).populate("jobId");
     if (!application) return res.status(404).json({ error: "Application not found" });
 
     if (application.status !== "sent") {
@@ -870,19 +1017,20 @@ export const generateFollowUp = async (req, res) => {
     }
 
     const existing = await Application.findOne({
+      userId,
       followUpFor: application._id,
       status: { $in: EDITABLE_STATUSES },
     }).sort({ updatedAt: -1 });
     if (existing) return res.status(200).json(existing);
 
-    const resume = await Resume.findById(application.resumeId);
+    const resume = await Resume.findOne({ _id: application.resumeId, userId });
     if (!resume) {
       return res
         .status(400)
         .json({ error: "The resume attached to this application no longer exists" });
     }
 
-    const profile = (await Profile.findOne()) || {};
+    const profile = (await Profile.findOne({ userId })) || {};
     const { subject, body, providerUsed } = await generateFollowUpEmail({
       job,
       application,
@@ -891,12 +1039,14 @@ export const generateFollowUp = async (req, res) => {
     });
 
     const draft = await Application.create({
+      userId,
       jobId: job._id,
       resumeId: resume._id,
       subject,
       body,
       recipientEmail: application.recipientEmail || job.hrEmail,
       status: "draft",
+      deliveryStatus: "NOT_SENT",
       providerUsed,
       isFollowUp: true,
       followUpFor: application._id,
@@ -914,6 +1064,7 @@ export const generateFollowUp = async (req, res) => {
 // PATCH /api/applications/:id/status — reply / interview / rejection tracking
 export const updateApplicationStatus = async (req, res) => {
   try {
+    const userId = req.user._id;
     const { status } = req.body || {};
     if (!OUTCOME_STATUSES.includes(status)) {
       return res
@@ -921,7 +1072,7 @@ export const updateApplicationStatus = async (req, res) => {
         .json({ error: `status must be one of ${OUTCOME_STATUSES.join(", ")}` });
     }
 
-    const application = await Application.findById(req.params.id);
+    const application = await Application.findOne({ _id: req.params.id, userId });
     if (!application) return res.status(404).json({ error: "Application not found" });
 
     if (application.status !== "sent") {
@@ -934,10 +1085,15 @@ export const updateApplicationStatus = async (req, res) => {
     await application.save();
 
     if (application.jobId) {
-      await Job.findByIdAndUpdate(application.jobId, { $set: { status } });
+      await Job.findByIdAndUpdate(application.jobId, {
+        $set: { status, outcomeStatus: status, lifecycleStatus: "SENT" },
+      });
     }
 
-    const populated = await application.populate(["jobId", "resumeId"]);
+    const populated = await application.populate([
+      "jobId",
+      { path: "resumeId", select: "-fileData" },
+    ]);
     return res.json(populated);
   } catch (error) {
     const cast = castError(error);
@@ -987,13 +1143,17 @@ const pdfDate = (value) => {
 const pdfStatus = (value) => String(value || "—").replace(/_/g, " ");
 
 // GET /api/applications/export-pdf
-export const exportApplicationsPdf = async (_req, res) => {
+export const exportApplicationsPdf = async (req, res) => {
   try {
+    const userId = req.user._id;
     const [applications, profile, statusGroups, totalJobs] = await Promise.all([
-      Application.find().populate("jobId").sort({ createdAt: -1 }).lean(),
-      Profile.findOne().lean(),
-      Job.aggregate([{ $group: { _id: "$status", count: { $sum: 1 } } }]),
-      Job.countDocuments({}),
+      Application.find({ userId }).populate("jobId").sort({ createdAt: -1 }).lean(),
+      Profile.findOne({ userId }).lean(),
+      Job.aggregate([
+        { $match: { userId } },
+        { $group: { _id: "$status", count: { $sum: 1 } } },
+      ]),
+      Job.countDocuments({ userId }),
     ]);
 
     const counts = new Map(statusGroups.map((group) => [group._id, group.count]));
@@ -1143,9 +1303,9 @@ export const exportApplicationsPdf = async (_req, res) => {
 };
 
 // GET /api/applications/export-csv
-export const exportApplicationsCsv = async (_req, res) => {
+export const exportApplicationsCsv = async (req, res) => {
   try {
-    const applications = await Application.find()
+    const applications = await Application.find({ userId: req.user._id })
       .populate("jobId")
       .sort({ createdAt: -1 })
       .lean();

@@ -18,7 +18,8 @@ export const uploadResume = async (req, res) => {
   }
 
   try {
-    const totalExisting = await Resume.countDocuments();
+    const ownerId = req.user._id;
+    const totalExisting = await Resume.countDocuments({ userId: ownerId });
     let isDefault =
       req.body.isDefault === "true" ||
       req.body.isDefault === "on" ||
@@ -47,6 +48,7 @@ export const uploadResume = async (req, res) => {
     }
 
     const resume = await Resume.create({
+      userId: ownerId,
       title: (req.body.title || "").trim() || titleFromFile(req.file.originalname),
       fileName: req.file.originalname,
       filePath: req.file.path,
@@ -59,7 +61,7 @@ export const uploadResume = async (req, res) => {
 
     if (isDefault) {
       await Resume.updateMany(
-        { _id: { $ne: resume._id } },
+        { userId: ownerId, _id: { $ne: resume._id } },
         { $set: { isDefault: false } },
       );
     }
@@ -74,9 +76,12 @@ export const uploadResume = async (req, res) => {
 };
 
 // GET /api/resumes
-export const getResumes = async (_req, res) => {
+export const getResumes = async (req, res) => {
   try {
-    const resumes = await Resume.find().select("-fileData").sort({ uploadedAt: -1 }).lean();
+    const resumes = await Resume.find({ userId: req.user._id })
+      .select("-fileData")
+      .sort({ uploadedAt: -1 })
+      .lean();
     return res.json(resumes);
   } catch (error) {
     return res.status(500).json({ error: error.message });
@@ -86,7 +91,7 @@ export const getResumes = async (_req, res) => {
 // POST /api/resumes/:id/reparse — re-runs extraction on the stored PDF
 export const reparseResume = async (req, res) => {
   try {
-    const resume = await Resume.findById(req.params.id);
+    const resume = await Resume.findOne({ _id: req.params.id, userId: req.user._id });
     if (!resume) return res.status(404).json({ error: "Resume not found" });
 
     const validFilePath = await ensureResumeOnDisk(resume);
@@ -123,10 +128,13 @@ export const reparseResume = async (req, res) => {
 // PATCH /api/resumes/:id/default — marks one resume as the default
 export const setDefaultResume = async (req, res) => {
   try {
-    const resume = await Resume.findById(req.params.id);
+    const resume = await Resume.findOne({ _id: req.params.id, userId: req.user._id }).select("-fileData");
     if (!resume) return res.status(404).json({ error: "Resume not found" });
 
-    await Resume.updateMany({ _id: { $ne: resume._id } }, { $set: { isDefault: false } });
+    await Resume.updateMany(
+      { userId: req.user._id, _id: { $ne: resume._id } },
+      { $set: { isDefault: false } },
+    );
     resume.isDefault = true;
     await resume.save();
 
@@ -142,7 +150,7 @@ export const setDefaultResume = async (req, res) => {
 // DELETE /api/resumes/:id
 export const deleteResume = async (req, res) => {
   try {
-    const resume = await Resume.findByIdAndDelete(req.params.id);
+    const resume = await Resume.findOneAndDelete({ _id: req.params.id, userId: req.user._id });
     if (!resume) return res.status(404).json({ error: "Resume not found" });
 
     if (resume.filePath) {

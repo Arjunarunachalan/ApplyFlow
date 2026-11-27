@@ -42,8 +42,9 @@ export const sendDigest = async (_req, res) => {
 };
 
 // GET /api/analytics
-export const getAnalytics = async (_req, res) => {
+export const getAnalytics = async (req, res) => {
   try {
+    const userId = req.user._id;
     const now = new Date();
     const since = startOfUtcDay(new Date(now.getTime() - (WINDOW_DAYS - 1) * DAY_MS));
 
@@ -54,14 +55,18 @@ export const getAnalytics = async (_req, res) => {
       statusGroups,
       recentSends,
       dueFollowUps,
+      pendingSummary,
     ] = await Promise.all([
-      Job.countDocuments({}),
-      Job.countDocuments({ applicationType: "email" }),
-      Job.countDocuments({ applicationType: "portal" }),
-      Job.aggregate([{ $group: { _id: "$status", count: { $sum: 1 } } }]),
-      Application.find({ sentAt: { $gte: since } }, { sentAt: 1 }).lean(),
+      Job.countDocuments({ userId }),
+      Job.countDocuments({ userId, applicationType: "email" }),
+      Job.countDocuments({ userId, applicationType: "portal" }),
+      Job.aggregate([
+        { $match: { userId } },
+        { $group: { _id: "$status", count: { $sum: 1 } } },
+      ]),
+      Application.find({ userId, sentAt: { $gte: since } }, { sentAt: 1 }).lean(),
       Application.aggregate([
-        { $match: { status: "sent", followUpDate: { $lte: now } } },
+        { $match: { userId, status: "sent", followUpDate: { $lte: now } } },
         {
           $lookup: {
             from: "jobs",
@@ -72,6 +77,33 @@ export const getAnalytics = async (_req, res) => {
         },
         { $match: { "job.status": "sent" } },
         { $count: "count" },
+      ]),
+      Promise.all([
+        Job.countDocuments({ userId, lifecycleStatus: { $nin: ["SENT", "ARCHIVED"] } }),
+        Job.countDocuments({
+          userId,
+          lifecycleStatus: { $nin: ["SENT", "ARCHIVED"] },
+          applicationType: "email",
+        }),
+        Job.countDocuments({
+          userId,
+          lifecycleStatus: { $nin: ["SENT", "ARCHIVED"] },
+          applicationType: { $ne: "email" },
+        }),
+        Job.countDocuments({
+          userId,
+          lifecycleStatus: { $in: ["EMAIL_DRAFT_READY", "AWAITING_APPROVAL"] },
+        }),
+        Job.countDocuments({
+          userId,
+          lifecycleStatus: { $in: ["APPROVED", "QUEUED", "SENDING"] },
+        }),
+        Job.countDocuments({
+          userId,
+          lifecycleStatus: {
+            $in: ["SEND_FAILED", "EMAIL_GENERATION_FAILED", "EXTRACTION_FAILED"],
+          },
+        }),
       ]),
     ]);
 
@@ -104,6 +136,15 @@ export const getAnalytics = async (_req, res) => {
 
     const daily = [...buckets.entries()].map(([date, count]) => ({ date, count }));
 
+    const [
+      pendingVacancies,
+      emailAvailable,
+      emailNotFound,
+      draftsReady,
+      approvedReadyToSend,
+      failedApplications,
+    ] = pendingSummary;
+
     return res.json({
       totalJobs,
       emailJobs,
@@ -114,6 +155,14 @@ export const getAnalytics = async (_req, res) => {
       responseRate,
       interviews: funnel.interview,
       dueFollowUp: dueFollowUps[0]?.count || 0,
+      summary: {
+        pendingVacancies,
+        emailAvailable,
+        emailNotFound,
+        draftsReady,
+        approvedReadyToSend,
+        failedApplications,
+      },
       daily,
       windowDays: WINDOW_DAYS,
       generatedAt: now.toISOString(),

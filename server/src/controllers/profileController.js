@@ -72,9 +72,9 @@ const pickProfileFields = (body = {}) => {
 };
 
 // GET /api/profile
-export const getProfile = async (_req, res) => {
+export const getProfile = async (req, res) => {
   try {
-    const profile = await Profile.findOne().lean();
+    const profile = await Profile.findOne({ userId: req.user._id }).lean();
     return res.json(profile || { ...DEFAULT_PROFILE, skills: [], projects: [] });
   } catch (error) {
     return res.status(500).json({ error: error.message });
@@ -86,8 +86,8 @@ export const upsertProfile = async (req, res) => {
   try {
     const updates = pickProfileFields(req.body);
 
-    let profile = await Profile.findOne();
-    if (!profile) profile = new Profile();
+    let profile = await Profile.findOne({ userId: req.user._id });
+    if (!profile) profile = new Profile({ userId: req.user._id });
     Object.assign(profile, updates);
     await profile.save();
 

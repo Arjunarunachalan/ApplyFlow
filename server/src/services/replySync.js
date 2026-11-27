@@ -292,12 +292,13 @@ const runSync = async () => {
             await Application.findByIdAndUpdate(application._id, {
               $set: {
                 status: "failed",
+                deliveryStatus: "FAILED",
                 errorLog: "Bounced / Undeliverable",
               },
             });
             if (application.jobId?._id) {
               await Job.findByIdAndUpdate(application.jobId._id, {
-                $set: { status: "failed" },
+                $set: { status: "failed", lifecycleStatus: "SEND_FAILED" },
               });
             }
           }
@@ -326,7 +327,9 @@ const runSync = async () => {
           },
         });
         if (match.jobId?._id) {
-          await Job.findByIdAndUpdate(match.jobId._id, { $set: { status: "replied" } });
+          await Job.findByIdAndUpdate(match.jobId._id, {
+            $set: { status: "replied", outcomeStatus: "replied", lifecycleStatus: "SENT" },
+          });
         }
 
         repliesFound += 1;

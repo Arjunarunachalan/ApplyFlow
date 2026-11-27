@@ -1,24 +1,44 @@
 import dotenv from "dotenv";
 dotenv.config();
 
-import express from "express";
 import cors from "cors";
+import express from "express";
 import { connectDB } from "./config/db.js";
-import { emailQueue } from "./workers/emailQueue.js";
-import jobRoutes from "./routes/jobRoutes.js";
-import resumeRoutes from "./routes/resumeRoutes.js";
-import profileRoutes from "./routes/profile.js";
-import applicationRoutes from "./routes/applications.js";
+import { requireAuth } from "./middleware/auth.js";
 import analyticsRoutes from "./routes/analytics.js";
+import applicationRoutes from "./routes/applications.js";
+import authRoutes from "./routes/authRoutes.js";
+import importRoutes from "./routes/importRoutes.js";
+import jobRoutes from "./routes/jobRoutes.js";
+import profileRoutes from "./routes/profile.js";
+import resumeRoutes from "./routes/resumeRoutes.js";
+import settingsRoutes from "./routes/settingsRoutes.js";
 import syncRoutes from "./routes/sync.js";
-
-import mongoose from "mongoose";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-app.use(cors());
-app.use(express.json());
+const allowedOrigins = (process.env.CLIENT_URL || "http://localhost:3000")
+  .split(",")
+  .map((item) => item.trim())
+  .filter(Boolean);
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (
+        !origin ||
+        allowedOrigins.includes(origin) ||
+        /^https:\/\/[a-zA-Z0-9-]+\.vercel\.app$/.test(origin)
+      ) {
+        return callback(null, true);
+      }
+      return callback(new Error("Origin not allowed by CORS"));
+    },
+    credentials: true,
+  }),
+);
+app.use(express.json({ limit: "2mb" }));
 
 // Ensure MongoDB is connected before handling requests in serverless environments
 app.use(async (_req, res, next) => {
@@ -33,41 +53,22 @@ app.use(async (_req, res, next) => {
   }
 });
 
-app.use("/api/jobs", jobRoutes);
-app.use("/api/resumes", resumeRoutes);
-app.use("/api/profile", profileRoutes);
-app.use("/api/applications", applicationRoutes);
-app.use("/api/analytics", analyticsRoutes);
-app.use("/api/sync", syncRoutes);
-
-// Health check
-app.get("/api/health", (req, res) => {
+// Public health and single-user authentication endpoints
+app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
 });
+app.use("/api/auth", authRoutes);
 
-// Quick test route to queue an email
-app.post("/api/test-email", async (req, res) => {
-  try {
-    const { to, subject, body } = req.body;
-
-    if (!to || !subject || !body) {
-      return res.status(400).json({ error: "to, subject, and body are required" });
-    }
-
-    const job = await emailQueue.add("send-application", {
-      to,
-      subject,
-      body,
-    });
-
-    res.status(202).json({
-      message: "Email queued successfully",
-      jobId: job.id,
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
+// Protected single-user API routes
+app.use("/api/jobs", requireAuth, jobRoutes);
+app.use("/api/vacancies", requireAuth, jobRoutes);
+app.use("/api/resumes", requireAuth, resumeRoutes);
+app.use("/api/profile", requireAuth, profileRoutes);
+app.use("/api/applications", requireAuth, applicationRoutes);
+app.use("/api/analytics", requireAuth, analyticsRoutes);
+app.use("/api/sync", requireAuth, syncRoutes);
+app.use("/api/imports", requireAuth, importRoutes);
+app.use("/api/settings", requireAuth, settingsRoutes);
 
 // Surfaces upload/validation failures as JSON instead of an HTML stack.
 app.use((err, _req, res, _next) => {

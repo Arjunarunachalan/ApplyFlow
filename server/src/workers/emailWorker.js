@@ -68,6 +68,7 @@ const worker = new Worker(
 
       if (application) {
         application.status = "sent";
+        application.deliveryStatus = "ACCEPTED_BY_GMAIL";
         application.messageId = messageId;
         application.sentAt = sentAt;
         application.errorLog = "";
@@ -85,7 +86,9 @@ const worker = new Worker(
     if (jobId) {
       const isFollowUp = job.data?.isFollowUp === true;
       if (!isFollowUp) {
-        await Job.findByIdAndUpdate(jobId, { $set: { status: "sent" } });
+        await Job.findByIdAndUpdate(jobId, {
+          $set: { status: "sent", lifecycleStatus: "SENT" },
+        });
       }
     }
 
@@ -112,11 +115,13 @@ worker.on("failed", async (job, err) => {
   try {
     if (applicationId) {
       await Application.findByIdAndUpdate(applicationId, {
-        $set: { status: "failed", errorLog: err.message },
+        $set: { status: "failed", deliveryStatus: "FAILED", errorLog: err.message },
       });
     }
     if (jobId) {
-      await Job.findByIdAndUpdate(jobId, { $set: { status: "failed" } });
+      await Job.findByIdAndUpdate(jobId, {
+        $set: { status: "failed", lifecycleStatus: "SEND_FAILED" },
+      });
     }
   } catch (updateError) {
     console.error(`[Job ${job.id}] Could not record the failure:`, updateError.message);

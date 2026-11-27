@@ -91,7 +91,7 @@ export default function ImportPage() {
     return def?._id || "";
   }, [resumes]);
 
-  const remainingQuota = quota?.remaining ?? 30;
+  const remainingQuota = quota?.remaining ?? 20;
   const hasEmail = Boolean(manualForm.hrEmail.trim());
 
   // Manual action handlers
