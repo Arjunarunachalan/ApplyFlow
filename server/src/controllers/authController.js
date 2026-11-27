@@ -81,6 +81,11 @@ export const setupOwner = async (req, res) => {
     if (!password || String(password).length < 8) {
       return res.status(400).json({ error: "Password must be at least 8 characters." });
     }
+    if (!process.env.AUTH_SECRET || process.env.AUTH_SECRET.length < 16) {
+      return res.status(500).json({
+        error: "Server AUTH_SECRET is not configured. Add AUTH_SECRET (min 16 chars) to environment variables.",
+      });
+    }
 
     const user = await User.create({
       name: cleanName,

@@ -12,6 +12,7 @@ export default function LoginPage() {
   const loadingStatus = useAuthStore((s) => s.loading);
   const login = useAuthStore((s) => s.login);
   const setup = useAuthStore((s) => s.setup);
+  const checkStatus = useAuthStore((s) => s.checkStatus);
 
   const [name, setName] = useState("Arjun");
   const [email, setEmail] = useState("");
@@ -38,7 +39,12 @@ export default function LoginPage() {
       }
       router.replace("/");
     } catch (err) {
-      setError(errorMessage(err));
+      if (err?.response?.status === 403) {
+        await checkStatus();
+        setError("Owner account already exists. Please sign in with your email and password.");
+      } else {
+        setError(errorMessage(err));
+      }
     } finally {
       setSubmitting(false);
     }
