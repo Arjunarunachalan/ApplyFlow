@@ -142,6 +142,33 @@ export const importsApi = {
   list: (params = {}) => unwrap(api.get("/imports", { params })),
 };
 
+export const screenshotImportApi = {
+  upload: (files, { sessionId, source = "upload", sources } = {}) => {
+    const formData = new FormData();
+    if (sessionId) formData.append("sessionId", sessionId);
+    formData.append("source", source);
+    if (Array.isArray(sources) && sources.length > 0) {
+      formData.append("sources", JSON.stringify(sources));
+    }
+    files.forEach((file, idx) => {
+      const fileName = file.name || `screenshot-${Date.now()}-${idx + 1}.png`;
+      formData.append("screenshots", file, fileName);
+    });
+    return unwrap(
+      api.post("/imports/screenshots/upload", formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      })
+    );
+  },
+  reorder: (sessionId, orderedIds) =>
+    unwrap(api.patch("/imports/screenshots/reorder", { sessionId, orderedIds })),
+  remove: (id) => unwrap(api.delete(`/imports/screenshots/${id}`)),
+  cancelSession: (sessionId) => unwrap(api.delete(`/imports/screenshots/session/${sessionId}`)),
+  extract: (sessionId) => unwrap(api.post("/imports/screenshots/extract", { sessionId })),
+  confirm: (payload) => unwrap(api.post("/imports/screenshots/confirm", payload)),
+  imageUrl: (id) => `/api/imports/screenshots/${id}/image`,
+};
+
 export const settingsApi = {
   get: () => unwrap(api.get("/settings")),
   updateEmail: (payload) => unwrap(api.put("/settings/email", payload)),
