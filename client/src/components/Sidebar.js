@@ -43,6 +43,7 @@ export default function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const user = useAuthStore((s) => s.user);
+  const authRequired = useAuthStore((s) => s.authRequired);
   const logout = useAuthStore((s) => s.logout);
 
   const handleLogout = async () => {
@@ -113,16 +114,18 @@ export default function Sidebar() {
         <div className="flex items-center justify-between gap-2 rounded-lg bg-zinc-900 px-2.5 py-2">
           <div className="min-w-0">
             <p className="truncate text-xs font-medium text-zinc-200">{user?.name || "Owner"}</p>
-            <p className="truncate text-[11px] text-zinc-500">{user?.email || ""}</p>
+            <p className="truncate text-[11px] text-zinc-500">{user?.email || "Personal Workspace"}</p>
           </div>
-          <button
-            type="button"
-            onClick={handleLogout}
-            title="Sign out"
-            className="rounded-md p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-white"
-          >
-            <LogOut className="h-4 w-4" />
-          </button>
+          {authRequired ? (
+            <button
+              type="button"
+              onClick={handleLogout}
+              title="Sign out"
+              className="rounded-md p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-white"
+            >
+              <LogOut className="h-4 w-4" />
+            </button>
+          ) : null}
         </div>
       </div>
     </aside>

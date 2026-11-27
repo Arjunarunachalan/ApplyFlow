@@ -19,6 +19,7 @@ export default function MobileNav() {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
   const router = useRouter();
+  const authRequired = useAuthStore((s) => s.authRequired);
   const logout = useAuthStore((s) => s.logout);
 
   const handleLogout = async () => {
@@ -90,14 +91,16 @@ export default function MobileNav() {
             </Link>
           </div>
 
-          <button
-            type="button"
-            onClick={handleLogout}
-            className="mt-3 flex items-center justify-center gap-2 rounded-lg border border-zinc-800 px-3 py-2.5 text-sm font-medium text-zinc-300 hover:bg-zinc-900 hover:text-white"
-          >
-            <LogOut className="h-4 w-4" />
-            Sign Out
-          </button>
+          {authRequired ? (
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="mt-3 flex items-center justify-center gap-2 rounded-lg border border-zinc-800 px-3 py-2.5 text-sm font-medium text-zinc-300 hover:bg-zinc-900 hover:text-white"
+            >
+              <LogOut className="h-4 w-4" />
+              Sign Out
+            </button>
+          ) : null}
         </div>
       )}
     </header>

@@ -1,3 +1,4 @@
+import { getOrCreateDefaultOwner, isAuthRequired } from "../middleware/auth.js";
 import User from "../models/User.js";
 import {
   SESSION_COOKIE_NAME,
@@ -32,27 +33,53 @@ const ensureEnvBootstrapUser = async () => {
 // GET /api/auth/status
 export const getAuthStatus = async (req, res) => {
   try {
+    if (!isAuthRequired()) {
+      const owner = await getOrCreateDefaultOwner();
+      return res.json({
+        authenticated: true,
+        authRequired: false,
+        needsSetup: false,
+        user: { id: owner._id, email: owner.email, name: owner.name },
+      });
+    }
+
     await ensureEnvBootstrapUser();
     const userCount = await User.countDocuments();
     const needsSetup = userCount === 0;
 
     if (needsSetup) {
-      return res.json({ authenticated: false, needsSetup: true, user: null });
+      return res.json({
+        authenticated: false,
+        authRequired: true,
+        needsSetup: true,
+        user: null,
+      });
     }
 
     const token = extractTokenFromRequest(req);
     const decoded = verifySessionToken(token);
     if (!decoded?.sub) {
-      return res.json({ authenticated: false, needsSetup: false, user: null });
+      return res.json({
+        authenticated: false,
+        authRequired: true,
+        needsSetup: false,
+        user: null,
+      });
     }
 
     const user = await User.findById(decoded.sub).select("_id email name").lean();
     if (!user) {
-      return res.json({ authenticated: false, needsSetup: false, user: null });
+      return res.json({
+        authenticated: false,
+        authRequired: true,
+        needsSetup: false,
+        user: null,
+      });
     }
 
     return res.json({
       authenticated: true,
+      authRequired: true,
       needsSetup: false,
       user: { id: user._id, email: user.email, name: user.name },
     });

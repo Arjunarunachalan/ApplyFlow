@@ -6,6 +6,7 @@ import { authApi, errorMessage } from "@/lib/api";
 export const useAuthStore = create((set) => ({
   user: null,
   authenticated: false,
+  authRequired: false,
   needsSetup: false,
   loading: true,
   error: null,
@@ -16,6 +17,7 @@ export const useAuthStore = create((set) => ({
       const data = await authApi.status();
       set({
         authenticated: Boolean(data.authenticated),
+        authRequired: Boolean(data.authRequired),
         needsSetup: Boolean(data.needsSetup),
         user: data.user || null,
         loading: false,
@@ -24,6 +26,7 @@ export const useAuthStore = create((set) => ({
     } catch (err) {
       set({
         authenticated: false,
+        authRequired: false,
         needsSetup: false,
         user: null,
         loading: false,
