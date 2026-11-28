@@ -1,6 +1,7 @@
 import { WORK_ARRANGEMENTS } from "../models/Job.js";
 
-const DEFAULT_AI_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS) || 35000;
+const getVisionTimeoutMs = () =>
+  Math.max(Number(process.env.VISION_TIMEOUT_MS) || 55000, Number(process.env.AI_TIMEOUT_MS) || 0, 45000);
 const getGeminiVisionModel = () =>
   process.env.GEMINI_VISION_MODEL || process.env.GEMINI_MODEL || "gemini-3.8-flash";
 
@@ -270,7 +271,7 @@ async function callGeminiVision(screenshots, apiKey, modelOverride) {
   )}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), DEFAULT_AI_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), getVisionTimeoutMs());
 
   try {
     const res = await fetch(endpoint, {
@@ -311,6 +312,16 @@ async function callGeminiVision(screenshots, apiKey, modelOverride) {
       provider: "gemini",
       model,
     };
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      const timeoutErr = new Error(
+        "Vision AI timed out while analyzing the screenshot(s). Please retry or upload fewer/smaller images."
+      );
+      timeoutErr.statusCode = 504;
+      timeoutErr.code = "VISION_TIMEOUT";
+      throw timeoutErr;
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
   }
@@ -323,7 +334,7 @@ async function callOllamaVision(screenshots) {
   const images = screenshots.map((shot) => shot.fileData.toString("base64"));
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), DEFAULT_AI_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), getVisionTimeoutMs());
 
   try {
     const res = await fetch(`${ollamaUrl}/api/generate`, {
