@@ -126,12 +126,14 @@ function VacancyWorkspaceInner({
   const fetchJobs = useJobStore((s) => s.fetchJobs);
   const fetchResumes = useJobStore((s) => s.fetchResumes);
   const deleteJob = useJobStore((s) => s.deleteJob);
+  const bulkDeleteJobs = useJobStore((s) => s.bulkDeleteJobs);
   const archiveJob = useJobStore((s) => s.archiveJob);
   const updateJobDetails = useJobStore((s) => s.updateJobDetails);
   const generateDraft = useJobStore((s) => s.generateDraft);
   const generateDrafts = useJobStore((s) => s.generateDrafts);
   const generatingJobId = useJobStore((s) => s.generatingJobId);
   const bulkDrafting = useJobStore((s) => s.bulkDrafting);
+  const bulkDeleting = useJobStore((s) => s.bulkDeleting);
 
   const initialFromUrl = useMemo(() => {
     const next = { ...DEFAULT_QUERY };
@@ -202,19 +204,27 @@ function VacancyWorkspaceInner({
     return count;
   }, [query]);
 
-  const emailEligible = useMemo(
+  const emailEligibleIdSet = useMemo(
     () =>
-      jobs.filter(
-        (j) =>
-          j.applicationType === "email" &&
-          j.hrEmail &&
-          !["SENT", "QUEUED", "SENDING", "ARCHIVED"].includes(j.lifecycleStatus),
+      new Set(
+        jobs
+          .filter(
+            (j) =>
+              j.applicationType === "email" &&
+              j.hrEmail &&
+              !["SENT", "QUEUED", "SENDING", "ARCHIVED"].includes(j.lifecycleStatus),
+          )
+          .map((j) => j._id),
       ),
     [jobs],
   );
 
-  const allChecked =
-    emailEligible.length > 0 && emailEligible.every((j) => selectedIds.includes(j._id));
+  const selectedEmailEligibleIds = useMemo(
+    () => selectedIds.filter((id) => emailEligibleIdSet.has(id)),
+    [selectedIds, emailEligibleIdSet],
+  );
+
+  const allChecked = jobs.length > 0 && jobs.every((j) => selectedIds.includes(j._id));
 
   const toggleSelect = (id) =>
     setSelectedIds((prev) =>
@@ -222,7 +232,7 @@ function VacancyWorkspaceInner({
     );
 
   const toggleSelectAll = () =>
-    setSelectedIds(allChecked ? [] : emailEligible.map((j) => j._id));
+    setSelectedIds(allChecked ? [] : jobs.map((j) => j._id));
 
   const handleGenerate = async (job) => {
     const app = await generateDraft(job._id, { tone: "direct" });
@@ -233,12 +243,30 @@ function VacancyWorkspaceInner({
   };
 
   const handleBulkDrafts = async () => {
-    if (!selectedIds.length) return;
-    const res = await generateDrafts(selectedIds, "direct");
+    if (!selectedEmailEligibleIds.length) return;
+    const res = await generateDrafts(selectedEmailEligibleIds, "direct");
     if (res) {
       toast.success(
         `Generated ${res.generated} draft(s)${res.skipped ? `, ${res.skipped} skipped` : ""}.`,
       );
+      setSelectedIds([]);
+      fetchJobs({ ...query, scope });
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (!selectedIds.length) return;
+    const ok = await confirm({
+      title: `Delete ${selectedIds.length} selected vacanc${selectedIds.length === 1 ? "y" : "ies"}?`,
+      message: "This permanently removes the selected vacancies from your workspace.",
+      confirmLabel: `Delete (${selectedIds.length})`,
+      tone: "danger",
+    });
+    if (!ok) return;
+
+    const res = await bulkDeleteJobs(selectedIds);
+    if (res) {
+      toast.success(`Deleted ${res.deletedCount} vacanc${res.deletedCount === 1 ? "y" : "ies"}.`);
       setSelectedIds([]);
       fetchJobs({ ...query, scope });
     }
@@ -382,6 +410,24 @@ function VacancyWorkspaceInner({
               </option>
             ))}
           </select>
+
+          <button
+            type="button"
+            onClick={() =>
+              updateQuery(
+                query.datePreset === "today" && query.dateField === "createdAt"
+                  ? { datePreset: "" }
+                  : { datePreset: "today", dateField: "createdAt" },
+              )
+            }
+            className={`rounded-lg border px-3 py-2 text-xs font-medium shadow-sm ${
+              query.datePreset === "today" && query.dateField === "createdAt"
+                ? "border-indigo-300 bg-indigo-50 text-indigo-700"
+                : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50"
+            }`}
+          >
+            Today&apos;s Uploads
+          </button>
 
           <select
             value={query.sort}
@@ -538,25 +584,43 @@ function VacancyWorkspaceInner({
         </p>
       ) : null}
 
-      {/* Bulk action bar (safe draft generation by default) */}
+      {/* Bulk action bar (draft generation + bulk delete) */}
       {selectedIds.length > 0 ? (
         <section className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 shadow-sm">
           <p className="text-sm font-medium text-indigo-900">
-            {selectedIds.length} email-eligible vacanc{selectedIds.length === 1 ? "y" : "ies"} selected
+            {selectedIds.length} vacanc{selectedIds.length === 1 ? "y" : "ies"} selected
+            {selectedEmailEligibleIds.length < selectedIds.length
+              ? ` (${selectedEmailEligibleIds.length} email-eligible)`
+              : ""}
           </p>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {selectedEmailEligibleIds.length > 0 ? (
+              <button
+                type="button"
+                onClick={handleBulkDrafts}
+                disabled={bulkDrafting || bulkDeleting}
+                className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-3.5 py-2 text-xs font-medium text-white shadow-sm hover:bg-indigo-700 disabled:opacity-60"
+              >
+                {bulkDrafting ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Sparkles className="h-3.5 w-3.5" />
+                )}
+                Generate Email Drafts ({selectedEmailEligibleIds.length})
+              </button>
+            ) : null}
             <button
               type="button"
-              onClick={handleBulkDrafts}
-              disabled={bulkDrafting}
-              className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-3.5 py-2 text-xs font-medium text-white shadow-sm hover:bg-indigo-700 disabled:opacity-60"
+              onClick={handleBulkDelete}
+              disabled={bulkDeleting || bulkDrafting}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-3.5 py-2 text-xs font-medium text-white shadow-sm hover:bg-rose-700 disabled:opacity-60"
             >
-              {bulkDrafting ? (
+              {bulkDeleting ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : (
-                <Sparkles className="h-3.5 w-3.5" />
+                <Trash2 className="h-3.5 w-3.5" />
               )}
-              Generate Email Drafts ({selectedIds.length})
+              Delete Selected ({selectedIds.length})
             </button>
             <button
               type="button"
@@ -580,8 +644,8 @@ function VacancyWorkspaceInner({
                     type="checkbox"
                     checked={allChecked}
                     onChange={toggleSelectAll}
-                    disabled={emailEligible.length === 0}
-                    aria-label="Select all email vacancies"
+                    disabled={jobs.length === 0}
+                    aria-label="Select all vacancies on page"
                     className="h-4 w-4 rounded border-zinc-300 text-indigo-600 focus:ring-indigo-400"
                   />
                 </th>
@@ -624,10 +688,6 @@ function VacancyWorkspaceInner({
 
               {jobs.map((job) => {
                 const lifecycle = job.lifecycleStatus || "IMPORTED";
-                const isSelectable =
-                  job.applicationType === "email" &&
-                  job.hrEmail &&
-                  !["SENT", "QUEUED", "SENDING", "ARCHIVED"].includes(lifecycle);
 
                 return (
                   <tr key={job._id} className="hover:bg-zinc-50/70">
@@ -636,8 +696,8 @@ function VacancyWorkspaceInner({
                         type="checkbox"
                         checked={selectedIds.includes(job._id)}
                         onChange={() => toggleSelect(job._id)}
-                        disabled={!isSelectable}
-                        className="h-4 w-4 rounded border-zinc-300 text-indigo-600 focus:ring-indigo-400 disabled:opacity-40"
+                        aria-label={`Select ${job.companyName} ${job.jobRole}`}
+                        className="h-4 w-4 rounded border-zinc-300 text-indigo-600 focus:ring-indigo-400"
                       />
                     </td>
                     <td className="px-4 py-3">

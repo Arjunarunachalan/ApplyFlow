@@ -74,6 +74,7 @@ export const jobApi = {
   update: (id, patch) => unwrap(api.patch(`/jobs/${id}`, patch)),
   archive: (id, archived = true) => unwrap(api.patch(`/jobs/${id}/archive`, { archived })),
   remove: (id) => unwrap(api.delete(`/jobs/${id}`)),
+  bulkDelete: (jobIds) => unwrap(api.post("/jobs/bulk-delete", { jobIds })),
   setStatus: (id, status) => unwrap(api.patch(`/jobs/${id}/status`, { status })),
   setInterview: (id, interview) => unwrap(api.patch(`/jobs/${id}/interview`, interview)),
   upcomingInterviews: () => unwrap(api.get("/jobs/upcoming-interviews")),

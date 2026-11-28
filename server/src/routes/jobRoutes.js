@@ -2,6 +2,7 @@ import { Router } from "express";
 import { csvUpload } from "../middleware/upload.js";
 import {
   archiveJob,
+  bulkDeleteJobs,
   createJob,
   deleteJob,
   getJobSummary,
@@ -17,6 +18,7 @@ import {
 const router = Router();
 
 router.post("/import-csv", csvUpload.single("file"), importJobsFromCsv);
+router.post("/bulk-delete", bulkDeleteJobs);
 router.post("/recalculate-scores", recalculateScores);
 router.get("/summary", getJobSummary);
 router.get("/upcoming-interviews", upcomingInterviews);

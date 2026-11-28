@@ -56,6 +56,7 @@ export const useJobStore = create((set, get) => ({
   generatingJobId: null,
   applyingJobId: null,
   bulkDrafting: false,
+  bulkDeleting: false,
   bulkApplying: false,
   bulkProgress: null,
 
@@ -213,6 +214,23 @@ export const useJobStore = create((set, get) => ({
       return result;
     } catch (error) {
       set({ bulkDrafting: false, bulkProgress: null, error: errorMessage(error) });
+      return null;
+    }
+  },
+
+  bulkDeleteJobs: async (jobIds) => {
+    if (!jobIds.length) return null;
+    set({ bulkDeleting: true, error: null });
+    try {
+      const result = await jobApi.bulkDelete(jobIds);
+      const idSet = new Set(jobIds);
+      set((state) => ({
+        jobs: state.jobs.filter((item) => !idSet.has(item._id)),
+        bulkDeleting: false,
+      }));
+      return result;
+    } catch (error) {
+      set({ bulkDeleting: false, error: errorMessage(error) });
       return null;
     }
   },

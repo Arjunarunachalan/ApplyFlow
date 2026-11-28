@@ -26,13 +26,48 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const FIELD_ALIASES = {
   companyName: ["companyname", "company", "employer", "organisation", "organization"],
   jobRole: ["jobrole", "role", "jobtitle", "title", "position", "designation"],
-  hrEmail: ["hremail", "email", "hremailid", "contactemail", "recruiteremail"],
-  applyUrl: ["applyurl", "applylink", "applicationurl", "url", "link"],
-  jobDescription: ["jobdescription", "description", "jd", "jobdetails"],
+  hrEmail: [
+    "hremail",
+    "hrapplicationemail",
+    "applicationemail",
+    "hrcontactemail",
+    "companyemail",
+    "careersemail",
+    "hremailaddress",
+    "email",
+    "hremailid",
+    "contactemail",
+    "recruiteremail",
+  ],
+  applyUrl: ["applyurl", "applylink", "applicationurl", "url", "link", "originalurl"],
+  jobDescription: ["jobdescription", "jobdescriptionsummary", "description", "jd", "jobdetails", "summary"],
   location: ["location", "joblocation", "city", "place"],
-  companyWebsite: ["companywebsite", "website", "companyurl", "careersite"],
+  companyWebsite: ["companywebsite", "website", "companyurl", "careersite", "alternativesourceurls"],
   salary: ["salary", "ctc", "pay", "compensation", "package"],
-  emailSource: ["emailsource", "source", "leadsource", "emailsourceurl"],
+  emailSource: ["emailsource", "emailsourceurl", "leadsource", "source"],
+  experienceRequirement: ["experiencerequirement", "experience", "experiencerequired"],
+  requiredSkills: ["requiredskills", "skills", "techstack"],
+  workArrangement: ["workarrangement", "workmode", "remote"],
+  sourcePlatform: ["source", "sourceplatform", "platform"],
+  jobPostedAt: ["postingdate", "posteddate", "jobpostedat", "dateposted"],
+};
+
+const extractValidEmail = (raw) => {
+  const cleaned = String(raw || "")
+    .replace(/^mailto:/i, "")
+    .split("?")[0]
+    .trim();
+  if (!cleaned) return "";
+  const candidates = cleaned
+    .split(/[\s,;|/]+/)
+    .map((part) => part.trim().toLowerCase())
+    .filter(Boolean);
+  for (const candidate of candidates) {
+    if (/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(candidate)) {
+      return candidate;
+    }
+  }
+  return "";
 };
 
 const normalizeHeader = (header) =>
@@ -240,8 +275,15 @@ export const importJobsFromCsv = async (req, res) => {
 
       const companyName = pick(row, headerMap, "companyName");
       const jobRole = pick(row, headerMap, "jobRole");
-      const applyUrl = pick(row, headerMap, "applyUrl");
-      let hrEmail = pick(row, headerMap, "hrEmail").toLowerCase();
+      let applyUrl = pick(row, headerMap, "applyUrl");
+      let hrEmail = extractValidEmail(pick(row, headerMap, "hrEmail"));
+
+      if (!hrEmail && /^mailto:/i.test(applyUrl)) {
+        hrEmail = extractValidEmail(applyUrl);
+      }
+      if (/^mailto:/i.test(applyUrl)) {
+        applyUrl = "";
+      }
 
       if (!companyName || !jobRole) {
         summary.invalidRows += 1;
@@ -254,9 +296,6 @@ export const importJobsFromCsv = async (req, res) => {
         }
         continue;
       }
-
-      const rawEmailInvalid = hrEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(hrEmail);
-      if (rawEmailInvalid) hrEmail = "";
 
       const applicationType = computeApplicationType(hrEmail, applyUrl);
       if (applicationType === "unknown") {
@@ -280,8 +319,27 @@ export const importJobsFromCsv = async (req, res) => {
 
       const jobDescription = pick(row, headerMap, "jobDescription");
       const location = pick(row, headerMap, "location");
+      const rawSkills = pick(row, headerMap, "requiredSkills");
+      const requiredSkills = rawSkills
+        ? rawSkills.split(/[,;|]+/).map((s) => s.trim()).filter(Boolean)
+        : [];
+      const rawWork = pick(row, headerMap, "workArrangement").toLowerCase();
+      const workArrangement = WORK_ARRANGEMENTS.includes(rawWork)
+        ? rawWork
+        : rawWork.includes("hybrid")
+          ? "hybrid"
+          : rawWork.includes("remote")
+            ? "remote"
+            : rawWork.includes("office") || rawWork.includes("on-site") || rawWork.includes("onsite")
+              ? "office"
+              : "unspecified";
+      const rawPosted = pick(row, headerMap, "jobPostedAt");
+      const parsedPosted = rawPosted ? new Date(rawPosted) : null;
+      const jobPostedAt =
+        parsedPosted && !Number.isNaN(parsedPosted.getTime()) ? parsedPosted : undefined;
+
       const { matchScore, matchedSkills } = computeMatch(
-        { jobRole, jobDescription, location },
+        { jobRole, jobDescription, location, requiredSkills },
         profileSkills,
       );
       const contactStatus = deriveContactStatus({ hrEmail });
@@ -304,8 +362,12 @@ export const importJobsFromCsv = async (req, res) => {
         companyWebsite: pick(row, headerMap, "companyWebsite"),
         salary: pick(row, headerMap, "salary"),
         emailSource: pick(row, headerMap, "emailSource"),
+        experienceRequirement: pick(row, headerMap, "experienceRequirement"),
+        requiredSkills,
+        workArrangement,
+        jobPostedAt,
         importType: "csv",
-        sourcePlatform: "csv",
+        sourcePlatform: pick(row, headerMap, "sourcePlatform") || "csv",
         applicationType,
         contactStatus,
         lifecycleStatus,
@@ -551,6 +613,29 @@ export const deleteJob = async (req, res) => {
     if (error.name === "CastError") {
       return res.status(400).json({ error: "Invalid job id" });
     }
+    return res.status(500).json({ error: error.message });
+  }
+};
+
+// POST /api/jobs/bulk-delete
+export const bulkDeleteJobs = async (req, res) => {
+  try {
+    const rawIds = Array.isArray(req.body?.jobIds) ? req.body.jobIds : [];
+    const validIds = [...new Set(rawIds.filter((id) => mongoose.Types.ObjectId.isValid(id)))];
+    if (validIds.length === 0) {
+      return res.status(400).json({ error: "Provide at least one valid jobId to delete." });
+    }
+
+    const result = await Job.deleteMany({
+      _id: { $in: validIds },
+      userId: req.user._id,
+    });
+
+    return res.json({
+      deletedCount: result.deletedCount || 0,
+      ids: validIds,
+    });
+  } catch (error) {
     return res.status(500).json({ error: error.message });
   }
 };
