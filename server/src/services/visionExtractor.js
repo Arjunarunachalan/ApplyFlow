@@ -1,9 +1,24 @@
 import { WORK_ARRANGEMENTS } from "../models/Job.js";
 
 const getVisionTimeoutMs = () =>
-  Math.max(Number(process.env.VISION_TIMEOUT_MS) || 55000, Number(process.env.AI_TIMEOUT_MS) || 0, 45000);
+  Math.max(Number(process.env.VISION_TIMEOUT_MS) || 22000, 15000);
 const getGeminiVisionModel = () =>
   process.env.GEMINI_VISION_MODEL || process.env.GEMINI_MODEL || "gemini-3.8-flash";
+
+const GEMINI_FALLBACK_MODELS = [
+  "gemini-3.8-flash",
+  "gemini-3.7-flash",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-3.1-flash-lite",
+  "gemini-flash-latest",
+];
+
+function getGeminiModelChain(preferredModel) {
+  const first = (preferredModel || getGeminiVisionModel()).replace(/^models\//, "");
+  return [first, ...GEMINI_FALLBACK_MODELS.filter((m) => m !== first)];
+}
 
 /**
  * Validate image buffer magic bytes to prevent spoofed MIME uploads.
@@ -252,8 +267,7 @@ function extractJsonFromText(text) {
   }
 }
 
-async function callGeminiVision(screenshots, apiKey, modelOverride) {
-  const model = modelOverride || getGeminiVisionModel();
+async function callGeminiSingleModel(screenshots, apiKey, model) {
   const prompt = buildVisionPrompt(screenshots.length);
   const parts = [{ text: prompt }];
 
@@ -290,15 +304,14 @@ async function callGeminiVision(screenshots, apiKey, modelOverride) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       const msg = data?.error?.message || `Gemini Vision API error (${res.status})`;
-      if (
-        !modelOverride &&
-        model !== "gemini-3.8-flash" &&
-        /no longer available|not found|deprecated/i.test(msg)
-      ) {
-        return callGeminiVision(screenshots, apiKey, "gemini-3.8-flash");
-      }
       const err = new Error(msg);
-      err.statusCode = res.status >= 500 ? 502 : 422;
+      err.statusCode = res.status >= 500 ? 502 : res.status === 429 ? 429 : 422;
+      err.retryable =
+        res.status === 429 ||
+        res.status >= 500 ||
+        /high demand|try again later|no longer available|not found|deprecated|overloaded|unavailable/i.test(
+          msg
+        );
       throw err;
     }
 
@@ -314,17 +327,36 @@ async function callGeminiVision(screenshots, apiKey, modelOverride) {
     };
   } catch (err) {
     if (err?.name === "AbortError") {
-      const timeoutErr = new Error(
-        "Vision AI timed out while analyzing the screenshot(s). Please retry or upload fewer/smaller images."
-      );
+      const timeoutErr = new Error(`Gemini model "${model}" timed out.`);
       timeoutErr.statusCode = 504;
       timeoutErr.code = "VISION_TIMEOUT";
+      timeoutErr.retryable = true;
       throw timeoutErr;
     }
     throw err;
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function callGeminiVision(screenshots, apiKey) {
+  const models = getGeminiModelChain();
+  let lastError = null;
+
+  for (const model of models) {
+    try {
+      return await callGeminiSingleModel(screenshots, apiKey, model);
+    } catch (err) {
+      lastError = err;
+      // Stop immediately on invalid API key / auth errors (400/401/403)
+      if (!err?.retryable) {
+        throw err;
+      }
+      console.warn(`[visionExtractor] ${model} failed (${err.message}); trying next fallback model...`);
+    }
+  }
+
+  throw lastError || new Error("All Gemini Vision models are currently unavailable.");
 }
 
 async function callOllamaVision(screenshots) {
