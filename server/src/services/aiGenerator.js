@@ -2,7 +2,7 @@
  * Tailored application email generator.
  *
  * AI_PROVIDER selects the provider:
- *   "gemini"   -> Gemini REST API (gemini-2.5-flash), JSON response output
+ *   "gemini"   -> Gemini REST API (gemini-3.8-flash), JSON response output
  *   "ollama"   -> local Ollama with format: "json", stream: false
  *   "template" -> deterministic, role-specific copy
  *
@@ -117,7 +117,7 @@ const providerUrl = () =>
 const ollamaModel = () =>
   process.env.OLLAMA_MODEL || "qwen2.5-coder:1.5b";
 
-const geminiModel = () => process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const geminiModel = () => process.env.GEMINI_MODEL || "gemini-3.8-flash";
 
 const timeoutMs = () => {
   const parsed = Number(process.env.AI_TIMEOUT_MS);

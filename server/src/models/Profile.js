@@ -32,6 +32,7 @@ const profileSchema = new mongoose.Schema(
     sendDelaySeconds: { type: Number, min: 15, default: 60 },
     maxRetries: { type: Number, min: 0, max: 5, default: 2 },
     autoSendEnabled: { type: Boolean, default: false },
+    geminiApiKey: { type: String, trim: true, default: "", select: false },
   },
   { timestamps: true },
 );

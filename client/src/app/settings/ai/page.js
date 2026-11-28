@@ -9,6 +9,8 @@ export default function AiSettingsPage() {
   const toast = useToast();
   const [ai, setAi] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [geminiApiKey, setGeminiApiKey] = useState("");
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     settingsApi
@@ -17,6 +19,23 @@ export default function AiSettingsPage() {
       .catch((err) => toast.error(errorMessage(err)))
       .finally(() => setLoading(false));
   }, [toast]);
+
+  const handleSaveKey = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      const updated = await settingsApi.updateAi({ geminiApiKey: geminiApiKey.trim() });
+      setAi((prev) => ({ ...(prev || {}), ...updated }));
+      setGeminiApiKey("");
+      toast.success(
+        updated.geminiConfigured ? "Gemini API key saved." : "Saved Gemini API key cleared."
+      );
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-6">
@@ -70,11 +89,33 @@ export default function AiSettingsPage() {
                 >
                   <Eye className="h-3.5 w-3.5" />
                   {ai?.visionSupported
-                    ? "Ready for Phase 2 Screenshots"
-                    : "Requires GEMINI_API_KEY in server env"}
+                    ? "Ready for Screenshot Extraction"
+                    : "Requires Gemini API Key"}
                 </dd>
               </div>
             </dl>
+
+            <form onSubmit={handleSaveKey} className="mt-5 border-t border-zinc-100 pt-4">
+              <label className="block text-xs font-medium text-zinc-700">
+                Save Gemini API Key (used for Vision AI Screenshot Extraction)
+              </label>
+              <div className="mt-2 flex gap-2">
+                <input
+                  type="password"
+                  value={geminiApiKey}
+                  onChange={(e) => setGeminiApiKey(e.target.value)}
+                  placeholder="AIza... (leave blank & save to clear)"
+                  className="flex-1 rounded-lg border border-zinc-300 px-3 py-1.5 text-xs text-zinc-900 focus:border-indigo-500 focus:outline-none"
+                />
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="rounded-lg bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-60"
+                >
+                  {saving ? "Saving..." : "Save Key"}
+                </button>
+              </div>
+            </form>
           </section>
 
           <section className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm">

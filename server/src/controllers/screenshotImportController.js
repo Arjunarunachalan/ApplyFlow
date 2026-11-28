@@ -290,7 +290,12 @@ export async function extractFromSession(req, res, next) {
       });
     }
 
-    const extracted = await extractVacancyFromScreenshots(screenshots);
+    const profile = await Profile.findOne({ userId: req.user._id })
+      .select("+geminiApiKey")
+      .lean();
+    const extracted = await extractVacancyFromScreenshots(screenshots, {
+      geminiApiKey: profile?.geminiApiKey,
+    });
 
     return res.json({
       sessionId,

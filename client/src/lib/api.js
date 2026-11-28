@@ -172,6 +172,7 @@ export const screenshotImportApi = {
 export const settingsApi = {
   get: () => unwrap(api.get("/settings")),
   updateEmail: (payload) => unwrap(api.put("/settings/email", payload)),
+  updateAi: (payload) => unwrap(api.put("/settings/ai", payload)),
 };
 
 export const profileApi = {

@@ -19,7 +19,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { screenshotImportApi } from "@/lib/api";
+import { errorMessage, screenshotImportApi, settingsApi } from "@/lib/api";
 import { useToast } from "@/components/ToastProvider";
 
 const ACCEPTED_TYPES = new Set(["image/png", "image/jpeg", "image/jpg", "image/webp"]);
@@ -90,6 +90,8 @@ export default function QuickApplyPage() {
   const [extracting, setExtracting] = useState(false);
   const [extractionProgress, setExtractionProgress] = useState(0);
   const [extractionError, setExtractionError] = useState("");
+  const [quickGeminiKey, setQuickGeminiKey] = useState("");
+  const [savingKey, setSavingKey] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -147,7 +149,7 @@ export default function QuickApplyPage() {
           } ready.`
         );
       } catch (err) {
-        toast.error(err.message || "Failed to upload screenshot.");
+        toast.error(errorMessage(err) || "Failed to upload screenshot.");
       } finally {
         setUploading(false);
       }
@@ -263,7 +265,7 @@ export default function QuickApplyPage() {
         setReviewOpen(false);
       }
     } catch (err) {
-      toast.error(err.message || "Failed to remove screenshot.");
+      toast.error(errorMessage(err) || "Failed to remove screenshot.");
     }
   };
 
@@ -283,7 +285,7 @@ export default function QuickApplyPage() {
       );
       setScreenshots(res.screenshots || next);
     } catch (err) {
-      toast.error(err.message || "Failed to reorder screenshots.");
+      toast.error(errorMessage(err) || "Failed to reorder screenshots.");
     }
   };
 
@@ -348,8 +350,9 @@ export default function QuickApplyPage() {
       setReviewOpen(true);
       toast.success("Vision AI extracted vacancy details. Please review before saving.");
     } catch (err) {
-      setExtractionError(err.message || "Vision AI extraction failed.");
-      toast.error(err.message || "Vision AI extraction failed.");
+      const msg = errorMessage(err) || "Vision AI extraction failed.";
+      setExtractionError(msg);
+      toast.error(msg);
     } finally {
       clearInterval(progressTimer);
       setExtracting(false);
@@ -405,7 +408,7 @@ export default function QuickApplyPage() {
       setForm(EMPTY_FORM);
       toast.success(`Saved "${res.job.jobRole}" at ${res.job.companyName} to Pending Vacancies.`);
     } catch (err) {
-      toast.error(err.message || "Failed to save vacancy.");
+      toast.error(errorMessage(err) || "Failed to save vacancy.");
     } finally {
       setSaving(false);
     }
@@ -599,21 +602,61 @@ export default function QuickApplyPage() {
           )}
 
           {extractionError && (
-            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3.5 text-xs text-amber-900">
-              <div className="flex items-start gap-2.5">
-                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-                <div>
-                  <p className="font-semibold">Vision AI Extraction Unavailable</p>
-                  <p className="mt-0.5 text-amber-800">{extractionError}</p>
+            <div className="mt-4 space-y-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-900">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="flex items-start gap-2.5">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                  <div>
+                    <p className="font-semibold">Vision AI Extraction Unavailable</p>
+                    <p className="mt-0.5 text-amber-800">{extractionError}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Link
+                    href="/settings/ai"
+                    className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 font-medium text-amber-900 hover:bg-amber-100"
+                  >
+                    AI Settings
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={() => setReviewOpen(true)}
+                    className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 font-medium text-amber-900 hover:bg-amber-100"
+                  >
+                    Fill Fields Manually Instead
+                  </button>
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => setReviewOpen(true)}
-                className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 font-medium text-amber-900 hover:bg-amber-100"
-              >
-                Fill Fields Manually Instead
-              </button>
+
+              <div className="flex flex-wrap items-center gap-2 border-t border-amber-200/80 pt-3">
+                <input
+                  type="password"
+                  value={quickGeminiKey}
+                  onChange={(e) => setQuickGeminiKey(e.target.value)}
+                  placeholder="Paste Gemini API Key (AIza...) to enable Vision AI immediately"
+                  className="min-w-[260px] flex-1 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs text-zinc-900 focus:border-indigo-500 focus:outline-none"
+                />
+                <button
+                  type="button"
+                  disabled={savingKey || !quickGeminiKey.trim()}
+                  onClick={async () => {
+                    setSavingKey(true);
+                    try {
+                      await settingsApi.updateAi({ geminiApiKey: quickGeminiKey.trim() });
+                      setQuickGeminiKey("");
+                      toast.success("Gemini API key saved. Extracting screenshots...");
+                      await handleExtract();
+                    } catch (err) {
+                      toast.error(errorMessage(err) || "Failed to save Gemini API key.");
+                    } finally {
+                      setSavingKey(false);
+                    }
+                  }}
+                  className="rounded-lg bg-amber-900 px-3 py-1.5 font-semibold text-white hover:bg-amber-950 disabled:opacity-50"
+                >
+                  {savingKey ? "Saving..." : "Save Key & Extract"}
+                </button>
+              </div>
             </div>
           )}
 

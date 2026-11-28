@@ -11,7 +11,13 @@ const maskEmail = (email = "") => {
 // GET /api/settings — non-secret configuration view for Email & AI Settings pages
 export const getSettings = async (req, res) => {
   try {
-    const profile = (await Profile.findOne({ userId: req.user._id }).lean()) || DEFAULT_PROFILE;
+    const profile =
+      (await Profile.findOne({ userId: req.user._id }).select("+geminiApiKey").lean()) ||
+      DEFAULT_PROFILE;
+
+    const hasEnvGemini = Boolean(process.env.GEMINI_API_KEY?.trim());
+    const hasSavedGemini = Boolean(profile?.geminiApiKey?.trim());
+    const hasOllamaVision = Boolean(process.env.OLLAMA_VISION_MODEL?.trim());
 
     return res.json({
       email: {
@@ -28,13 +34,42 @@ export const getSettings = async (req, res) => {
       },
       ai: {
         provider: String(process.env.AI_PROVIDER || "template").toLowerCase(),
-        geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
-        geminiModel: process.env.GEMINI_MODEL || "gemini-2.5-flash",
+        geminiConfigured: hasEnvGemini || hasSavedGemini,
+        geminiKeySource: hasEnvGemini ? "env" : hasSavedGemini ? "saved" : "none",
+        geminiModel: process.env.GEMINI_MODEL || "gemini-3.8-flash",
         ollamaUrl: process.env.OLLAMA_URL || "http://127.0.0.1:11434/api/generate",
         ollamaModel: process.env.OLLAMA_MODEL || "qwen2.5-coder:1.5b",
         timeoutMs: Number(process.env.AI_TIMEOUT_MS) || 20000,
-        visionSupported: Boolean(process.env.GEMINI_API_KEY),
+        visionSupported: hasEnvGemini || hasSavedGemini || hasOllamaVision,
       },
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+};
+
+export const updateAiSettings = async (req, res) => {
+  try {
+    const body = req.body || {};
+    let profile = await Profile.findOne({ userId: req.user._id }).select("+geminiApiKey");
+    if (!profile) {
+      profile = new Profile({ userId: req.user._id });
+    }
+
+    if (body.geminiApiKey !== undefined) {
+      profile.geminiApiKey = String(body.geminiApiKey || "").trim();
+    }
+
+    await profile.save();
+
+    const hasEnvGemini = Boolean(process.env.GEMINI_API_KEY?.trim());
+    const hasSavedGemini = Boolean(profile.geminiApiKey?.trim());
+    const hasOllamaVision = Boolean(process.env.OLLAMA_VISION_MODEL?.trim());
+
+    return res.json({
+      geminiConfigured: hasEnvGemini || hasSavedGemini,
+      geminiKeySource: hasEnvGemini ? "env" : hasSavedGemini ? "saved" : "none",
+      visionSupported: hasEnvGemini || hasSavedGemini || hasOllamaVision,
     });
   } catch (error) {
     return res.status(500).json({ error: error.message });

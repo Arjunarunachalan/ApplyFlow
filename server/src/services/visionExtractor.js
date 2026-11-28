@@ -1,7 +1,8 @@
 import { WORK_ARRANGEMENTS } from "../models/Job.js";
 
 const DEFAULT_AI_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS) || 35000;
-const GEMINI_VISION_MODEL = process.env.GEMINI_VISION_MODEL || process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const getGeminiVisionModel = () =>
+  process.env.GEMINI_VISION_MODEL || process.env.GEMINI_MODEL || "gemini-3.8-flash";
 
 /**
  * Validate image buffer magic bytes to prevent spoofed MIME uploads.
@@ -250,8 +251,8 @@ function extractJsonFromText(text) {
   }
 }
 
-async function callGeminiVision(screenshots) {
-  const apiKey = process.env.GEMINI_API_KEY;
+async function callGeminiVision(screenshots, apiKey, modelOverride) {
+  const model = modelOverride || getGeminiVisionModel();
   const prompt = buildVisionPrompt(screenshots.length);
   const parts = [{ text: prompt }];
 
@@ -265,7 +266,7 @@ async function callGeminiVision(screenshots) {
   }
 
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-    GEMINI_VISION_MODEL
+    model
   )}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
   const controller = new AbortController();
@@ -288,6 +289,13 @@ async function callGeminiVision(screenshots) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       const msg = data?.error?.message || `Gemini Vision API error (${res.status})`;
+      if (
+        !modelOverride &&
+        model !== "gemini-3.8-flash" &&
+        /no longer available|not found|deprecated/i.test(msg)
+      ) {
+        return callGeminiVision(screenshots, apiKey, "gemini-3.8-flash");
+      }
       const err = new Error(msg);
       err.statusCode = res.status >= 500 ? 502 : 422;
       throw err;
@@ -301,7 +309,7 @@ async function callGeminiVision(screenshots) {
     return {
       parsed: extractJsonFromText(text),
       provider: "gemini",
-      model: GEMINI_VISION_MODEL,
+      model,
     };
   } finally {
     clearTimeout(timer);
@@ -354,19 +362,20 @@ async function callOllamaVision(screenshots) {
  * Extract one structured vacancy from an ordered list of VacancyScreenshot documents.
  * Throws a 503 configuration error if no vision-capable provider is configured.
  */
-export async function extractVacancyFromScreenshots(screenshots) {
+export async function extractVacancyFromScreenshots(screenshots, options = {}) {
   if (!Array.isArray(screenshots) || screenshots.length === 0) {
     const err = new Error("At least one screenshot is required for extraction.");
     err.statusCode = 400;
     throw err;
   }
 
-  const hasGemini = Boolean(process.env.GEMINI_API_KEY?.trim());
+  const geminiKey = String(options?.geminiApiKey || process.env.GEMINI_API_KEY || "").trim();
+  const hasGemini = Boolean(geminiKey);
   const hasOllamaVision = Boolean(process.env.OLLAMA_VISION_MODEL?.trim());
 
   if (!hasGemini && !hasOllamaVision) {
     const err = new Error(
-      "No Vision AI provider is configured. Set GEMINI_API_KEY (recommended) or OLLAMA_VISION_MODEL in server/.env to enable screenshot extraction."
+      "No Vision AI provider is configured. Paste your Gemini API key in AI Settings (or here below) or set GEMINI_API_KEY in server/.env."
     );
     err.statusCode = 503;
     err.code = "VISION_PROVIDER_UNCONFIGURED";
@@ -375,7 +384,7 @@ export async function extractVacancyFromScreenshots(screenshots) {
 
   let rawResult;
   if (hasGemini) {
-    rawResult = await callGeminiVision(screenshots);
+    rawResult = await callGeminiVision(screenshots, geminiKey);
   } else {
     rawResult = await callOllamaVision(screenshots);
   }
